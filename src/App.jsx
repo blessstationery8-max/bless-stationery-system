@@ -198,164 +198,33 @@ function Login() {
   );
 }
 
-function BusinessSetup({ user, onCreated }) {
-  const [form, setForm] = useState({ business_name: "", phone: "", email: user.email || "", address: "" });
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState("");
-
-  async function createBusiness(e) {
-    e.preventDefault();
-    setError("");
-    if (!form.business_name.trim()) {
-      setError("Weka jina la biashara.");
-      return;
-    }
-    setBusy(true);
-    const { data: business, error: businessError } = await supabase
-      .from("businesses")
-      .insert({
-        business_name: form.business_name.trim(),
-        owner_id: user.id,
-        phone: form.phone.trim() || null,
-        email: form.email.trim() || null,
-        address: form.address.trim() || null,
-        active: true,
-      })
-      .select("*")
-      .single();
-
-    if (businessError) {
-      setError(businessError.message);
-      setBusy(false);
-      return;
-    }
-
-    const { error: staffError } = await supabase.from("staff").insert({
-      user_id: user.id,
-      staff_name: form.business_name.trim() + " Owner",
-      role: "ADMIN",
-      active: true,
-      business_id: business.id,
-    });
-
-    if (staffError) {
-      await supabase.from("businesses").delete().eq("id", business.id);
-      setError(staffError.message);
-      setBusy(false);
-      return;
-    }
-
-    onCreated(business);
-    setBusy(false);
-  }
-
-  return (
-    <div className="login-page">
-      <div className="login-brand">
-        <div className="brand-logo">B</div>
-        <h1>Karibu kwenye Bless Business</h1>
-        <p>Weka taarifa za biashara yako kuanza kutumia mfumo.</p>
-        <div className="brand-features">
-          <div>✓ Sales & Receipts</div>
-          <div>✓ Stock Management</div>
-          <div>✓ Expenses & Deposits</div>
-          <div>✓ Reports & Staff</div>
-        </div>
-      </div>
-      <div className="login-side">
-        <form className="login-card" onSubmit={createBusiness}>
-          <div className="mobile-logo">B</div>
-          <h2>Weka Biashara Yako</h2>
-          <p className="muted">Taarifa hizi zitatumika kwenye reports na receipts.</p>
-          {error && <div className="error-box">{error}</div>}
-          <Field label="Business Name" value={form.business_name} onChange={(v) => setForm({ ...form, business_name: v })} placeholder="Mfano: Bless Stationery" required />
-          <Field label="Phone" value={form.phone} onChange={(v) => setForm({ ...form, phone: v })} placeholder="07XXXXXXXX" />
-          <Field label="Email" type="email" value={form.email} onChange={(v) => setForm({ ...form, email: v })} />
-          <Field label="Address" value={form.address} onChange={(v) => setForm({ ...form, address: v })} placeholder="Mfano: Dar es Salaam" />
-          <button className="primary-btn login-btn" disabled={busy}>{busy ? "Inatengeneza biashara..." : "ANZA BIASHARA"}</button>
-        </form>
-      </div>
-    </div>
-  );
-}
-
 function System({ user }) {
   const [page, setPage] = useState("dashboard");
   const [mobileMenu, setMobileMenu] = useState(false);
   const [staff, setStaff] = useState(null);
   const [business, setBusiness] = useState(null);
-  const [businessLoading, setBusinessLoading] = useState(true);
   const [refresh, setRefresh] = useState(0);
 
   useEffect(() => {
     loadStaff();
-    loadBusiness();
   }, [user.id]);
 
   async function loadStaff() {
     const { data, error } = await supabase
       .from("staff")
-      .select("*")
+      .select("*, businesses(*)")
       .eq("user_id", user.id)
-      .eq("active", true)
-      .order("created_at", { ascending: true })
-      .limit(1);
+      .maybeSingle();
 
     if (error) {
-      console.error("Staff load error:", error.message);
+      console.error("Failed to load staff/business:", error);
       setStaff(null);
-      return;
-    }
-
-    setStaff(data?.[0] || null);
-  }
-
-  async function loadBusiness() {
-    setBusinessLoading(true);
-
-    const { data: ownedBusiness, error: ownerError } = await supabase
-      .from("businesses")
-      .select("*")
-      .eq("owner_id", user.id)
-      .eq("active", true)
-      .order("created_at", { ascending: true })
-      .limit(1)
-      .maybeSingle();
-
-    if (ownerError) {
-      console.error("Business load error:", ownerError.message);
-      setBusinessLoading(false);
-      return;
-    }
-
-    if (ownedBusiness) {
-      setBusiness(ownedBusiness);
-      setBusinessLoading(false);
-      return;
-    }
-
-    const { data: staffRow } = await supabase
-      .from("staff")
-      .select("business_id")
-      .eq("user_id", user.id)
-      .eq("active", true)
-      .not("business_id", "is", null)
-      .limit(1)
-      .maybeSingle();
-
-    if (staffRow?.business_id) {
-      const { data: memberBusiness } = await supabase
-        .from("businesses")
-        .select("*")
-        .eq("id", staffRow.business_id)
-        .eq("active", true)
-        .maybeSingle();
-      setBusiness(memberBusiness || null);
-    } else {
       setBusiness(null);
+      return;
     }
 
-    setBusinessLoading(false);
+    setStaff(data || null);
+    setBusiness(data?.businesses || null);
   }
 
   function go(name) {
@@ -367,71 +236,54 @@ function System({ user }) {
     await supabase.auth.signOut();
   }
 
-  if (businessLoading) {
-    return (
-      <div className="loading-screen">
-        <div className="loading-box">
-          <div className="logo-circle">B</div>
-          <h2>Bless Stationery</h2>
-          <p>Inapakia taarifa za biashara...</p>
-          <div className="spinner" />
-        </div>
-      </div>
-    );
-  }
-
-  if (!business) {
-    return (
-      <BusinessSetup
-        user={user}
-        onCreated={(b) => {
-          setBusiness(b);
-          loadStaff();
-        }}
-      />
-    );
-  }
+  const businessId = staff?.business_id || null;
 
   const pages = {
-    dashboard: <Dashboard go={go} refresh={refresh} />,
+    dashboard: <Dashboard businessId={businessId} go={go} refresh={refresh} />,
     products: (
       <ProductsPage
+        businessId={businessId}
         staff={staff}
         onChanged={() => setRefresh((x) => x + 1)}
       />
     ),
     services: (
       <ServicesPage
+        businessId={businessId}
         staff={staff}
         onChanged={() => setRefresh((x) => x + 1)}
       />
     ),
     stock: (
       <StockInPage
+        businessId={businessId}
         staff={staff}
         onChanged={() => setRefresh((x) => x + 1)}
       />
     ),
     sales: (
       <SalesPage
+        businessId={businessId}
         staff={staff}
         onChanged={() => setRefresh((x) => x + 1)}
       />
     ),
     expenses: (
       <ExpensesPage
+        businessId={businessId}
         staff={staff}
         onChanged={() => setRefresh((x) => x + 1)}
       />
     ),
     deposits: (
       <DepositsPage
+        businessId={businessId}
         staff={staff}
         onChanged={() => setRefresh((x) => x + 1)}
       />
     ),
-    reports: <ReportsPage refresh={refresh} />,
-    staff: <StaffPage refresh={refresh} />,
+    reports: <ReportsPage businessId={businessId} refresh={refresh} />,
+    staff: <StaffPage businessId={businessId} refresh={refresh} />,
   };
 
   return (
@@ -451,7 +303,7 @@ function System({ user }) {
           </div>
           <div>
             <strong>{staff?.staff_name || "Admin"}</strong>
-            <span>{staff?.role || "ADMIN"} • {business.business_name}</span>
+            <span>{staff?.role || "ADMIN"}</span>
           </div>
         </div>
 
@@ -582,14 +434,22 @@ function System({ user }) {
               ↻ Refresh
             </button>
             <div className="user-pill">
-              {business?.business_name || "Business"} ·
               <span className="online-dot" />
               {staff?.staff_name || user.email}
             </div>
           </div>
         </header>
 
-        <section className="content">{pages[page]}</section>
+        <section className="content">
+          {!businessId ? (
+            <div className="panel">
+              <h3>Business profile haijapatikana</h3>
+              <p>Account hii haijaunganishwa na biashara. Wasiliana na administrator.</p>
+            </div>
+          ) : (
+            pages[page]
+          )}
+        </section>
       </main>
     </div>
   );
@@ -604,7 +464,7 @@ function NavButton({ active, icon, text, onClick }) {
   );
 }
 
-function Dashboard({ go, refresh }) {
+function Dashboard({ businessId, go, refresh }) {
   const [stats, setStats] = useState({
     todaySales: 0,
     todayProfit: 0,
@@ -621,9 +481,10 @@ function Dashboard({ go, refresh }) {
 
   useEffect(() => {
     load();
-  }, [refresh]);
+  }, [refresh, businessId]);
 
   async function load() {
+    if (!businessId) return;
     setLoading(true);
 
     const [
@@ -632,10 +493,10 @@ function Dashboard({ go, refresh }) {
       { data: sales },
       { data: stockIn },
     ] = await Promise.all([
-      supabase.from("products").select("*").eq("active", true),
-      supabase.from("services").select("*").eq("active", true),
-      supabase.from("sales").select("*").order("sale_date", { ascending: false }).limit(1000),
-      supabase.from("stock_in").select("*"),
+      supabase.from("products").select("*").eq("business_id", businessId).eq("active", true),
+      supabase.from("services").select("*").eq("business_id", businessId).eq("active", true),
+      supabase.from("sales").select("*").eq("business_id", businessId).order("sale_date", { ascending: false }).limit(1000),
+      supabase.from("stock_in").select("*").eq("business_id", businessId),
     ]);
 
     const p = products || [];
@@ -849,7 +710,7 @@ function StatCard({ title, value, icon, tone = "blue" }) {
   );
 }
 
-function ProductsPage({ onChanged }) {
+function ProductsPage({ businessId, onChanged }) {
   const [products, setProducts] = useState([]);
   const [stockIn, setStockIn] = useState([]);
   const [sales, setSales] = useState([]);
@@ -868,13 +729,15 @@ function ProductsPage({ onChanged }) {
 
   useEffect(() => {
     load();
-  }, []);
+  }, [businessId]);
 
   async function load() {
+    if (!businessId) return;
+
     const [{ data: p }, { data: si }, { data: s }] = await Promise.all([
-      supabase.from("products").select("*").order("product_name"),
-      supabase.from("stock_in").select("*"),
-      supabase.from("sales").select("product_id, quantity"),
+      supabase.from("products").select("*").eq("business_id", businessId).order("product_name"),
+      supabase.from("stock_in").select("*").eq("business_id", businessId),
+      supabase.from("sales").select("product_id, quantity").eq("business_id", businessId),
     ]);
 
     setProducts(p || []);
@@ -908,6 +771,7 @@ function ProductsPage({ onChanged }) {
     setBusy(true);
 
     const { error } = await supabase.from("products").insert({
+      business_id: businessId,
       product_name: form.product_name.trim(),
       unit: form.unit.trim() || "PCS",
       opening_qty: number(form.opening_qty),
@@ -939,7 +803,11 @@ function ProductsPage({ onChanged }) {
   async function deleteProduct(id, name) {
     if (!confirm(`Una uhakika unataka kufuta "${name}"?`)) return;
 
-    const { error } = await supabase.from("products").delete().eq("id", id);
+    const { error } = await supabase
+      .from("products")
+      .delete()
+      .eq("id", id)
+      .eq("business_id", businessId);
 
     if (error) {
       alert(
@@ -1101,7 +969,7 @@ function StockBadge({ stock, reorder }) {
   return <span className="badge success">{stock}</span>;
 }
 
-function StockInPage({ staff, onChanged }) {
+function StockInPage({ businessId, staff, onChanged }) {
   const [products, setProducts] = useState([]);
   const [records, setRecords] = useState([]);
   const [mode, setMode] = useState("existing");
@@ -1120,14 +988,17 @@ function StockInPage({ staff, onChanged }) {
 
   useEffect(() => {
     load();
-  }, []);
+  }, [businessId]);
 
   async function load() {
+    if (!businessId) return;
+
     const [{ data: p }, { data: r }] = await Promise.all([
-      supabase.from("products").select("*").eq("active", true).order("product_name"),
+      supabase.from("products").select("*").eq("business_id", businessId).eq("active", true).order("product_name"),
       supabase
         .from("stock_in")
         .select("*, products(product_name, unit)")
+        .eq("business_id", businessId)
         .order("stock_date", { ascending: false })
         .limit(100),
     ]);
@@ -1162,6 +1033,7 @@ function StockInPage({ staff, onChanged }) {
       const { data, error } = await supabase
         .from("products")
         .insert({
+          business_id: businessId,
           product_name: form.new_product_name.trim(),
           unit: form.unit || "PCS",
           opening_qty: 0,
@@ -1187,6 +1059,7 @@ function StockInPage({ staff, onChanged }) {
     }
 
     const { error } = await supabase.from("stock_in").insert({
+      business_id: businessId,
       stock_date: new Date(form.stock_date).toISOString(),
       product_id: productId,
       quantity_in: number(form.quantity_in),
@@ -1219,7 +1092,11 @@ function StockInPage({ staff, onChanged }) {
   async function deleteRecord(id) {
     if (!confirm("Futa hii Stock In record?")) return;
 
-    const { error } = await supabase.from("stock_in").delete().eq("id", id);
+    const { error } = await supabase
+      .from("stock_in")
+      .delete()
+      .eq("id", id)
+      .eq("business_id", businessId);
 
     if (error) alert(error.message);
     else {
@@ -1397,7 +1274,7 @@ function StockInPage({ staff, onChanged }) {
   );
 }
 
-function SalesPage({ staff, onChanged }) {
+function SalesPage({ businessId, staff, onChanged }) {
   const [products, setProducts] = useState([]);
   const [services, setServices] = useState([]);
   const [sales, setSales] = useState([]);
@@ -1421,23 +1298,26 @@ function SalesPage({ staff, onChanged }) {
 
   useEffect(() => {
     load();
-  }, []);
+  }, [businessId]);
 
   async function load() {
+    if (!businessId) return;
+
     const [
       { data: p },
       { data: sv },
       { data: s },
       { data: si },
     ] = await Promise.all([
-      supabase.from("products").select("*").eq("active", true).order("product_name"),
-      supabase.from("services").select("*").eq("active", true).order("service_name"),
+      supabase.from("products").select("*").eq("business_id", businessId).eq("active", true).order("product_name"),
+      supabase.from("services").select("*").eq("business_id", businessId).eq("active", true).order("service_name"),
       supabase
         .from("sales")
         .select("*, products(product_name), services(service_name)")
+        .eq("business_id", businessId)
         .order("sale_date", { ascending: false })
         .limit(100),
-      supabase.from("stock_in").select("*"),
+      supabase.from("stock_in").select("*").eq("business_id", businessId),
     ]);
 
     setProducts(p || []);
@@ -1537,6 +1417,7 @@ function SalesPage({ staff, onChanged }) {
     setBusy(true);
 
     const payload = {
+      business_id: businessId,
       sale_date: new Date(form.sale_date).toISOString(),
       sale_type: type,
       product_id:
@@ -1605,7 +1486,11 @@ function SalesPage({ staff, onChanged }) {
   async function deleteSale(id) {
     if (!confirm("Futa hii sale?")) return;
 
-    const { error } = await supabase.from("sales").delete().eq("id", id);
+    const { error } = await supabase
+      .from("sales")
+      .delete()
+      .eq("id", id)
+      .eq("business_id", businessId);
 
     if (error) alert(error.message);
     else {
@@ -1810,6 +1695,7 @@ function SalesPage({ staff, onChanged }) {
                 const { data, error } = await supabase
                   .from("sales")
                   .select("*, products(product_name), services(service_name)")
+                  .eq("business_id", businessId)
                   .order("sale_date", { ascending: false });
                 if (error) {
                   alert(error.message);
@@ -1984,7 +1870,7 @@ function ReceiptModal({ receipt, onClose }) {
   );
 }
 
-function ServicesPage({ onChanged }) {
+function ServicesPage({ businessId, onChanged }) {
   const [services, setServices] = useState([]);
   const [show, setShow] = useState(false);
   const [form, setForm] = useState({
@@ -1995,12 +1881,14 @@ function ServicesPage({ onChanged }) {
 
   useEffect(() => {
     load();
-  }, []);
+  }, [businessId]);
 
   async function load() {
+    if (!businessId) return;
     const { data } = await supabase
       .from("services")
       .select("*")
+      .eq("business_id", businessId)
       .order("service_name");
 
     setServices(data || []);
@@ -2010,6 +1898,7 @@ function ServicesPage({ onChanged }) {
     e.preventDefault();
 
     const { error } = await supabase.from("services").insert({
+      business_id: businessId,
       service_name: form.service_name.trim(),
       selling_price: number(form.selling_price),
       cost: number(form.cost),
@@ -2033,7 +1922,11 @@ function ServicesPage({ onChanged }) {
   async function deleteService(id) {
     if (!confirm("Futa service hii?")) return;
 
-    const { error } = await supabase.from("services").delete().eq("id", id);
+    const { error } = await supabase
+      .from("services")
+      .delete()
+      .eq("id", id)
+      .eq("business_id", businessId);
 
     if (error) {
       alert(
@@ -2112,7 +2005,7 @@ function ServicesPage({ onChanged }) {
   );
 }
 
-function ExpensesPage({ staff, onChanged }) {
+function ExpensesPage({ businessId, staff, onChanged }) {
   const [records, setRecords] = useState([]);
   const [form, setForm] = useState({
     expense_item: "",
@@ -2124,12 +2017,14 @@ function ExpensesPage({ staff, onChanged }) {
 
   useEffect(() => {
     load();
-  }, []);
+  }, [businessId]);
 
   async function load() {
+    if (!businessId) return;
     const { data } = await supabase
       .from("expenses")
       .select("*")
+      .eq("business_id", businessId)
       .order("expense_date", { ascending: false })
       .limit(200);
 
@@ -2140,6 +2035,7 @@ function ExpensesPage({ staff, onChanged }) {
     e.preventDefault();
 
     const { error } = await supabase.from("expenses").insert({
+      business_id: businessId,
       expense_date: new Date(form.expense_date).toISOString(),
       expense_item: form.expense_item.trim(),
       category: form.category,
@@ -2165,7 +2061,11 @@ function ExpensesPage({ staff, onChanged }) {
   async function remove(id) {
     if (!confirm("Futa expense hii?")) return;
 
-    const { error } = await supabase.from("expenses").delete().eq("id", id);
+    const { error } = await supabase
+      .from("expenses")
+      .delete()
+      .eq("id", id)
+      .eq("business_id", businessId);
 
     if (error) alert(error.message);
     else {
@@ -2210,6 +2110,14 @@ function ExpensesPage({ staff, onChanged }) {
             type="datetime-local"
             value={form.expense_date}
             onChange={(v) => setForm({ ...form, expense_date: v })}
+            required
+          />
+
+          <Field
+            label="Deposit Date & Time"
+            type="datetime-local"
+            value={form.deposit_date}
+            onChange={(v) => setForm({ ...form, deposit_date: v })}
             required
           />
 
@@ -2297,7 +2205,7 @@ function ExpensesPage({ staff, onChanged }) {
   );
 }
 
-function DepositsPage({ staff, onChanged }) {
+function DepositsPage({ businessId, staff, onChanged }) {
   const [records, setRecords] = useState([]);
   const [form, setForm] = useState({
     amount: "",
@@ -2310,12 +2218,14 @@ function DepositsPage({ staff, onChanged }) {
 
   useEffect(() => {
     load();
-  }, []);
+  }, [businessId]);
 
   async function load() {
+    if (!businessId) return;
     const { data } = await supabase
       .from("deposits")
       .select("*")
+      .eq("business_id", businessId)
       .order("deposit_date", { ascending: false })
       .limit(200);
 
@@ -2326,6 +2236,7 @@ function DepositsPage({ staff, onChanged }) {
     e.preventDefault();
 
     const { error } = await supabase.from("deposits").insert({
+      business_id: businessId,
       deposit_date: new Date(form.deposit_date).toISOString(),
       amount: number(form.amount),
       method: form.method,
@@ -2353,7 +2264,11 @@ function DepositsPage({ staff, onChanged }) {
   async function remove(id) {
     if (!confirm("Futa deposit hii?")) return;
 
-    const { error } = await supabase.from("deposits").delete().eq("id", id);
+    const { error } = await supabase
+      .from("deposits")
+      .delete()
+      .eq("id", id)
+      .eq("business_id", businessId);
 
     if (error) alert(error.message);
     else {
@@ -2483,340 +2398,221 @@ function DepositsPage({ staff, onChanged }) {
   );
 }
 
-function ReportsPage({ refresh }) {
-  const [startDate, setStartDate] = useState(() => {
-    const d = new Date();
-    return d.toISOString().slice(0, 10);
+function ReportsPage({ businessId, refresh }) {
+  const [period, setPeriod] = useState("today");
+  const [data, setData] = useState({
+    sales: [],
+    expenses: [],
+    deposits: [],
   });
-  const [endDate, setEndDate] = useState(() => {
-    const d = new Date();
-    return d.toISOString().slice(0, 10);
-  });
-  const [data, setData] = useState({ sales: [], expenses: [], deposits: [] });
-  const [loading, setLoading] = useState(false);
-  const [searched, setSearched] = useState(false);
 
   useEffect(() => {
     load();
-  }, [refresh]);
+  }, [period, refresh, businessId]);
 
-  function dateStart(date) {
-    return new Date(`${date}T00:00:00`).toISOString();
-  }
+  async function load() {
+    if (!businessId) return;
+    const start = period === "today" ? todayStart() : monthStart();
 
-  function dateEndExclusive(date) {
-    const d = new Date(`${date}T00:00:00`);
-    d.setDate(d.getDate() + 1);
-    return d.toISOString();
-  }
-
-  async function load(customStart = startDate, customEnd = endDate) {
-    if (!customStart || !customEnd) return;
-
-    if (customStart > customEnd) {
-      alert("Tarehe ya kuanzia haiwezi kuwa baada ya tarehe ya mwisho.");
-      return;
-    }
-
-    setLoading(true);
-
-    const from = dateStart(customStart);
-    const to = dateEndExclusive(customEnd);
-
-    const [{ data: sales, error: salesError }, { data: expenses, error: expensesError }, { data: deposits, error: depositsError }] = await Promise.all([
+    const [
+      { data: sales },
+      { data: expenses },
+      { data: deposits },
+    ] = await Promise.all([
       supabase
         .from("sales")
         .select("*")
-        .gte("sale_date", from)
-        .lt("sale_date", to)
+        .eq("business_id", businessId)
+        .gte("sale_date", start)
         .order("sale_date", { ascending: false }),
       supabase
         .from("expenses")
         .select("*")
-        .gte("expense_date", from)
-        .lt("expense_date", to)
+        .eq("business_id", businessId)
+        .gte("expense_date", start)
         .order("expense_date", { ascending: false }),
       supabase
         .from("deposits")
         .select("*")
-        .gte("deposit_date", from)
-        .lt("deposit_date", to)
+        .eq("business_id", businessId)
+        .gte("deposit_date", start)
         .order("deposit_date", { ascending: false }),
     ]);
-
-    const firstError = salesError || expensesError || depositsError;
-    if (firstError) alert(firstError.message);
 
     setData({
       sales: sales || [],
       expenses: expenses || [],
       deposits: deposits || [],
     });
-    setSearched(true);
-    setLoading(false);
   }
 
-  function setPreset(type) {
-    const today = new Date();
-    const pad = (n) => String(n).padStart(2, "0");
-    const isoDate = (d) => `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
-
-    if (type === "today") {
-      const value = isoDate(today);
-      setStartDate(value);
-      setEndDate(value);
-      load(value, value);
-      return;
-    }
-
-    if (type === "yesterday") {
-      const d = new Date(today);
-      d.setDate(d.getDate() - 1);
-      const value = isoDate(d);
-      setStartDate(value);
-      setEndDate(value);
-      load(value, value);
-      return;
-    }
-
-    if (type === "week") {
-      const start = new Date(today);
-      const day = start.getDay();
-      const diff = day === 0 ? 6 : day - 1;
-      start.setDate(start.getDate() - diff);
-      const s = isoDate(start);
-      const e = isoDate(today);
-      setStartDate(s);
-      setEndDate(e);
-      load(s, e);
-      return;
-    }
-
-    const start = new Date(today.getFullYear(), today.getMonth(), 1);
-    const s = isoDate(start);
-    const e = isoDate(today);
-    setStartDate(s);
-    setEndDate(e);
-    load(s, e);
-  }
-
-  const salesTotal = data.sales.reduce((a, x) => a + number(x.sales_total), 0);
-  const profit = data.sales.reduce((a, x) => a + number(x.profit), 0);
-  const expensesTotal = data.expenses.reduce((a, x) => a + number(x.amount), 0);
-  const depositsTotal = data.deposits.reduce((a, x) => a + number(x.amount), 0);
-  const netAfterExpenses = salesTotal - expensesTotal;
-  const cashFlowPosition = salesTotal + depositsTotal - expensesTotal;
-
-  function reportTitle() {
-    if (startDate === endDate) return `Report ya ${new Date(`${startDate}T00:00:00`).toLocaleDateString("en-TZ", { dateStyle: "full" })}`;
-    return `Report kutoka ${new Date(`${startDate}T00:00:00`).toLocaleDateString("en-TZ", { dateStyle: "medium" })} hadi ${new Date(`${endDate}T00:00:00`).toLocaleDateString("en-TZ", { dateStyle: "medium" })}`;
-  }
-
-  function exportReport() {
-    if (!data.sales.length && !data.expenses.length && !data.deposits.length) {
-      alert("Hakuna report data ya ku-export kwa tarehe hizi.");
-      return;
-    }
-
-    const workbook = XLSX.utils.book_new();
-    const summaryRows = [
-      { Metric: "Period", Value: `${startDate} - ${endDate}` },
-      { Metric: "Total Sales", Value: salesTotal },
-      { Metric: "Gross Profit", Value: profit },
-      { Metric: "Expenses", Value: expensesTotal },
-      { Metric: "Deposits", Value: depositsTotal },
-      { Metric: "Net After Expenses", Value: netAfterExpenses },
-      { Metric: "Cash Flow Position", Value: cashFlowPosition },
-    ];
-
-    const salesRows = data.sales.map((x) => ({
-      Date: formatDate(x.sale_date),
-      Type: x.sale_type,
-      Quantity: x.quantity,
-      "Unit Cost": x.unit_cost,
-      "Selling Price": x.selling_price,
-      Total: x.sales_total,
-      Profit: x.profit,
-      "Payment Method": x.payment_method,
-    }));
-
-    const expenseRows = data.expenses.map((x) => ({
-      Date: formatDate(x.expense_date),
-      Item: x.expense_item,
-      Category: x.category,
-      Amount: x.amount,
-      Description: x.description || "",
-    }));
-
-    const depositRows = data.deposits.map((x) => ({
-      Date: formatDate(x.deposit_date),
-      Amount: x.amount,
-      Method: x.method,
-      Depositor: x.depositor || "",
-      Reference: x.reference_no || "",
-      Note: x.note || "",
-    }));
-
-    XLSX.utils.book_append_sheet(workbook, XLSX.utils.json_to_sheet(summaryRows), "Summary");
-    XLSX.utils.book_append_sheet(workbook, XLSX.utils.json_to_sheet(salesRows), "Sales");
-    XLSX.utils.book_append_sheet(workbook, XLSX.utils.json_to_sheet(expenseRows), "Expenses");
-    XLSX.utils.book_append_sheet(workbook, XLSX.utils.json_to_sheet(depositRows), "Deposits");
-
-    XLSX.writeFile(workbook, `Bless-Stationery-Report-${startDate}-to-${endDate}.xlsx`);
-  }
-
-  function printReport() {
-    const popup = window.open("", "_blank", "width=1200,height=900");
-    if (!popup) {
-      alert("Browser imezuia print window. Ruhusu pop-ups kisha jaribu tena.");
-      return;
-    }
-
-    const salesRows = data.sales.map((x) => `
-      <tr>
-        <td>${formatDate(x.sale_date)}</td>
-        <td>${x.sale_type || "-"}</td>
-        <td>${x.quantity || 0}</td>
-        <td>${x.payment_method || "-"}</td>
-        <td>${money(x.sales_total)}</td>
-        <td>${money(x.profit)}</td>
-      </tr>`).join("");
-
-    const expenseRows = data.expenses.map((x) => `
-      <tr>
-        <td>${formatDate(x.expense_date)}</td>
-        <td>${x.expense_item || "-"}</td>
-        <td>${x.category || "-"}</td>
-        <td>${money(x.amount)}</td>
-        <td>${x.description || "-"}</td>
-      </tr>`).join("");
-
-    const depositRows = data.deposits.map((x) => `
-      <tr>
-        <td>${formatDate(x.deposit_date)}</td>
-        <td>${x.method || "-"}</td>
-        <td>${x.depositor || "-"}</td>
-        <td>${x.reference_no || "-"}</td>
-        <td>${money(x.amount)}</td>
-      </tr>`).join("");
-
-    popup.document.write(`<!doctype html><html><head><title>Bless Stationery - Report</title>
-      <style>
-        *{box-sizing:border-box}body{font-family:Arial,sans-serif;color:#172033;margin:0;padding:32px;font-size:12px}
-        .head{display:flex;justify-content:space-between;border-bottom:3px solid #172033;padding-bottom:18px;margin-bottom:20px}
-        h1{margin:0 0 5px;font-size:24px}.muted{color:#667085}.period{font-weight:700;text-align:right}
-        .cards{display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin:20px 0}.card{border:1px solid #ddd;border-radius:8px;padding:12px}.label{font-size:10px;color:#667085}.value{font-size:17px;font-weight:700;margin-top:5px}
-        h2{font-size:16px;margin:26px 0 8px;border-bottom:1px solid #ddd;padding-bottom:6px}table{width:100%;border-collapse:collapse;margin-bottom:18px}th,td{border:1px solid #ddd;padding:7px;text-align:left}th{background:#f3f4f6;font-size:11px}
-        .footer{margin-top:30px;border-top:1px solid #ddd;padding-top:12px;display:flex;justify-content:space-between}.sign{margin-top:35px;width:220px;border-top:1px solid #222;padding-top:6px}
-        @media print{body{padding:10mm}.no-print{display:none}.cards{grid-template-columns:repeat(4,1fr)} }
-      </style></head><body>
-      <div class="head"><div><h1>Bless Stationery</h1><div class="muted">Business Management System</div><div style="margin-top:8px;font-weight:700">${reportTitle()}</div></div><div class="period">Generated<br>${new Date().toLocaleString("en-TZ")}</div></div>
-      <div class="cards">
-        <div class="card"><div class="label">TOTAL SALES</div><div class="value">${money(salesTotal)}</div></div>
-        <div class="card"><div class="label">GROSS PROFIT</div><div class="value">${money(profit)}</div></div>
-        <div class="card"><div class="label">EXPENSES</div><div class="value">${money(expensesTotal)}</div></div>
-        <div class="card"><div class="label">DEPOSITS</div><div class="value">${money(depositsTotal)}</div></div>
-      </div>
-      <h2>Sales</h2><table><thead><tr><th>Date</th><th>Type</th><th>Qty</th><th>Payment</th><th>Total</th><th>Profit</th></tr></thead><tbody>${salesRows || '<tr><td colspan="6">Hakuna sales.</td></tr>'}</tbody></table>
-      <h2>Expenses</h2><table><thead><tr><th>Date</th><th>Item</th><th>Category</th><th>Amount</th><th>Description</th></tr></thead><tbody>${expenseRows || '<tr><td colspan="5">Hakuna expenses.</td></tr>'}</tbody></table>
-      <h2>Deposits</h2><table><thead><tr><th>Date</th><th>Method</th><th>Depositor</th><th>Reference</th><th>Amount</th></tr></thead><tbody>${depositRows || '<tr><td colspan="5">Hakuna deposits.</td></tr>'}</tbody></table>
-      <div class="footer"><div><strong>Net After Expenses:</strong> ${money(netAfterExpenses)}<br><strong>Cash Flow Position:</strong> ${money(cashFlowPosition)}</div><div><div class="sign">Authorized Signature</div></div></div>
-      <script>window.onload=function(){window.print();}</script></body></html>`);
-    popup.document.close();
-  }
+  const salesTotal = data.sales.reduce(
+    (a, x) => a + number(x.sales_total),
+    0
+  );
+  const profit = data.sales.reduce(
+    (a, x) => a + number(x.profit),
+    0
+  );
+  const expensesTotal = data.expenses.reduce(
+    (a, x) => a + number(x.amount),
+    0
+  );
+  const depositsTotal = data.deposits.reduce(
+    (a, x) => a + number(x.amount),
+    0
+  );
 
   return (
     <div>
-      <div className="page-title">
-        <div>
-          <div className="eyebrow">BUSINESS REPORTING</div>
-          <h1>Reports</h1>
-          <p>Chagua tarehe yoyote kupata taarifa ya biashara na ku-print.</p>
+      <PageTitle
+        title="Reports"
+        subtitle="Taarifa za biashara kwa siku au mwezi."
+      />
+
+      <div className="report-toolbar">
+        <div className="report-tabs">
+          <button
+          className={period === "today" ? "active" : ""}
+          onClick={() => setPeriod("today")}
+        >
+          Leo
+        </button>
+          <button
+            className={period === "month" ? "active" : ""}
+            onClick={() => setPeriod("month")}
+          >
+            Mwezi Huu
+          </button>
         </div>
-        <div className="quick-actions">
-          <button className="secondary-btn" onClick={exportReport}>⬇ Export Excel</button>
-          <button className="primary-btn" onClick={printReport}>🖨 Print Report</button>
+        <button
+          className="secondary-btn"
+          onClick={() => {
+            if (!data.sales.length && !data.expenses.length && !data.deposits.length) {
+              alert("Hakuna report data ya ku-export kwa kipindi hiki.");
+              return;
+            }
+            const workbook = XLSX.utils.book_new();
+            const salesRows = data.sales.map((x) => ({
+              Date: formatDate(x.sale_date),
+              Type: x.sale_type,
+              Quantity: x.quantity,
+              "Unit Cost": x.unit_cost,
+              "Selling Price": x.selling_price,
+              Total: x.sales_total,
+              Profit: x.profit,
+              "Payment Method": x.payment_method,
+            }));
+            const expenseRows = data.expenses.map((x) => ({
+              Date: formatDate(x.expense_date),
+              Item: x.expense_item,
+              Category: x.category,
+              Amount: x.amount,
+              Description: x.description || "",
+            }));
+            const depositRows = data.deposits.map((x) => ({
+              Date: formatDate(x.deposit_date),
+              Amount: x.amount,
+              Method: x.method,
+              Depositor: x.depositor || "",
+              Reference: x.reference_no || "",
+              Note: x.note || "",
+            }));
+            XLSX.utils.book_append_sheet(workbook, XLSX.utils.json_to_sheet(salesRows), "Sales");
+            XLSX.utils.book_append_sheet(workbook, XLSX.utils.json_to_sheet(expenseRows), "Expenses");
+            XLSX.utils.book_append_sheet(workbook, XLSX.utils.json_to_sheet(depositRows), "Deposits");
+            XLSX.writeFile(workbook, `Bless-Stationery-${period === "today" ? "Daily" : "Monthly"}-Report-${new Date().toISOString().slice(0, 10)}.xlsx`);
+          }}
+        >
+          ⬇ Export Excel
+        </button>
+      </div>
+
+      <div className="stats-grid">
+        <StatCard
+          title="Total Sales"
+          value={money(salesTotal)}
+          icon="💰"
+          tone="blue"
+        />
+        <StatCard
+          title="Gross Profit"
+          value={money(profit)}
+          icon="📈"
+          tone="green"
+        />
+        <StatCard
+          title="Expenses"
+          value={money(expensesTotal)}
+          icon="💸"
+          tone="red"
+        />
+        <StatCard
+          title="Deposits"
+          value={money(depositsTotal)}
+          icon="🏦"
+          tone="purple"
+        />
+      </div>
+
+      <div className="dashboard-grid">
+        <div className="panel">
+          <div className="panel-header">
+            <div>
+              <h3>Sales Summary</h3>
+              <span>{data.sales.length} transactions</span>
+            </div>
+          </div>
+
+          <div className="report-list">
+            {data.sales.slice(0, 20).map((x) => (
+              <div className="report-row" key={x.id}>
+                <div>
+                  <strong>{x.sale_type}</strong>
+                  <span>{formatDate(x.sale_date)}</span>
+                </div>
+                <strong>{money(x.sales_total)}</strong>
+              </div>
+            ))}
+          </div>
+        </div>
+
+        <div className="panel">
+          <div className="panel-header">
+            <div>
+              <h3>Expenses Summary</h3>
+              <span>{data.expenses.length} records</span>
+            </div>
+          </div>
+
+          <div className="report-list">
+            {data.expenses.slice(0, 20).map((x) => (
+              <div className="report-row" key={x.id}>
+                <div>
+                  <strong>{x.expense_item}</strong>
+                  <span>{x.category}</span>
+                </div>
+                <strong>{money(x.amount)}</strong>
+              </div>
+            ))}
+          </div>
         </div>
       </div>
 
-      <div className="panel report-filter-panel">
-        <div className="panel-header">
-          <div><h3>Report Period</h3><span>Chagua siku moja au range ya tarehe.</span></div>
+      <div className="panel summary-panel">
+        <h3>Net Position</h3>
+        <div className="net-number">
+          {money(salesTotal - expensesTotal)}
         </div>
-        <div className="report-date-grid">
-          <Field label="Kuanzia" type="date" value={startDate} onChange={setStartDate} />
-          <Field label="Hadi" type="date" value={endDate} onChange={setEndDate} />
-          <div className="report-filter-actions">
-            <button className="primary-btn" onClick={() => load()}>🔎 Generate Report</button>
-          </div>
-        </div>
-        <div className="report-presets">
-          <span>Quick select:</span>
-          <button onClick={() => setPreset("today")}>Leo</button>
-          <button onClick={() => setPreset("yesterday")}>Jana</button>
-          <button onClick={() => setPreset("week")}>Wiki Hii</button>
-          <button onClick={() => setPreset("month")}>Mwezi Huu</button>
-        </div>
+        <p>
+          Hii ni Sales minus Expenses kwa kipindi kilichochaguliwa.
+        </p>
       </div>
-
-      {loading ? <PageLoading /> : (
-        <div id="print-report-area">
-          <div className="report-period-heading">
-            <strong>{reportTitle()}</strong>
-            <span>{searched ? `${data.sales.length} sales • ${data.expenses.length} expenses • ${data.deposits.length} deposits` : ""}</span>
-          </div>
-
-          <div className="stats-grid">
-            <StatCard title="Total Sales" value={money(salesTotal)} icon="💰" tone="blue" />
-            <StatCard title="Gross Profit" value={money(profit)} icon="📈" tone="green" />
-            <StatCard title="Expenses" value={money(expensesTotal)} icon="💸" tone="red" />
-            <StatCard title="Deposits" value={money(depositsTotal)} icon="🏦" tone="purple" />
-          </div>
-
-          <div className="stats-grid small-stats">
-            <StatCard title="Net After Expenses" value={money(netAfterExpenses)} icon="✓" tone={netAfterExpenses >= 0 ? "green" : "red"} />
-            <StatCard title="Cash Flow Position" value={money(cashFlowPosition)} icon="💵" tone={cashFlowPosition >= 0 ? "blue" : "red"} />
-            <StatCard title="Sales Transactions" value={data.sales.length} icon="🧾" />
-            <StatCard title="Expense Records" value={data.expenses.length} icon="📋" />
-          </div>
-
-          <div className="dashboard-grid">
-            <div className="panel">
-              <div className="panel-header"><div><h3>Sales Summary</h3><span>{data.sales.length} transactions</span></div></div>
-              <div className="report-list">
-                {data.sales.slice(0, 50).map((x) => (
-                  <div className="report-row" key={x.id}><div><strong>{x.sale_type || "SALE"}</strong><span>{formatDate(x.sale_date)} • {x.payment_method || "-"}</span></div><strong>{money(x.sales_total)}</strong></div>
-                ))}
-                {!data.sales.length && <EmptyState text="Hakuna sales kwenye tarehe hizi." />}
-              </div>
-            </div>
-            <div className="panel">
-              <div className="panel-header"><div><h3>Expenses Summary</h3><span>{data.expenses.length} records</span></div></div>
-              <div className="report-list">
-                {data.expenses.slice(0, 50).map((x) => (
-                  <div className="report-row" key={x.id}><div><strong>{x.expense_item}</strong><span>{formatDate(x.expense_date)} • {x.category || "Other"}</span></div><strong>{money(x.amount)}</strong></div>
-                ))}
-                {!data.expenses.length && <EmptyState text="Hakuna expenses kwenye tarehe hizi." />}
-              </div>
-            </div>
-          </div>
-
-          <div className="panel summary-panel">
-            <div className="panel-header"><div><h3>Deposits Summary</h3><span>{data.deposits.length} records</span></div></div>
-            <div className="report-list">
-              {data.deposits.slice(0, 50).map((x) => (
-                <div className="report-row" key={x.id}><div><strong>{x.method || "CASH"}</strong><span>{formatDate(x.deposit_date)} • {x.depositor || "-"}</span></div><strong>{money(x.amount)}</strong></div>
-              ))}
-              {!data.deposits.length && <EmptyState text="Hakuna deposits kwenye tarehe hizi." />}
-            </div>
-          </div>
-        </div>
-      )}
     </div>
   );
 }
 
-function StaffPage() {
+function StaffPage({ businessId, refresh }) {
   const [staff, setStaff] = useState([]);
   const [showForm, setShowForm] = useState(false);
   const [search, setSearch] = useState("");
@@ -2829,12 +2625,14 @@ function StaffPage() {
 
   useEffect(() => {
     load();
-  }, []);
+  }, [businessId]);
 
   async function load() {
+    if (!businessId) return;
     const { data, error } = await supabase
       .from("staff")
       .select("*")
+      .eq("business_id", businessId)
       .order("created_at", { ascending: true });
 
     if (error) {
@@ -2856,6 +2654,7 @@ function StaffPage() {
     setBusy(true);
 
     const { error } = await supabase.from("staff").insert({
+      business_id: businessId,
       staff_name: form.staff_name.trim(),
       role: form.role,
       active: form.active,
@@ -2876,7 +2675,8 @@ function StaffPage() {
     const { error } = await supabase
       .from("staff")
       .update({ active: !row.active })
-      .eq("id", row.id);
+      .eq("id", row.id)
+      .eq("business_id", businessId);
 
     if (error) alert(error.message);
     else await load();
@@ -2893,7 +2693,8 @@ function StaffPage() {
     const { error } = await supabase
       .from("staff")
       .delete()
-      .eq("id", row.id);
+      .eq("id", row.id)
+      .eq("business_id", businessId);
 
     if (error) alert(error.message);
     else await load();
@@ -4565,57 +4366,6 @@ td strong {
   .report-tabs button {
     white-space: nowrap;
   }
-}
-
-
-/* Professional report controls */
-.report-filter-panel { margin-bottom: 20px; }
-.report-date-grid {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr)) auto;
-  gap: 16px;
-  align-items: end;
-}
-.report-filter-actions { display: flex; align-items: end; }
-.report-filter-actions .primary-btn { min-height: 46px; white-space: nowrap; }
-.report-presets {
-  display: flex;
-  align-items: center;
-  flex-wrap: wrap;
-  gap: 8px;
-  margin-top: 16px;
-  padding-top: 14px;
-  border-top: 1px solid #edf0f5;
-  color: #667085;
-  font-size: 13px;
-}
-.report-presets button {
-  border: 1px solid #d9dee8;
-  background: #fff;
-  border-radius: 8px;
-  padding: 8px 13px;
-  cursor: pointer;
-  font-weight: 600;
-}
-.report-presets button:hover { background: #f7f8fa; }
-.report-period-heading {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  gap: 16px;
-  margin: 8px 0 14px;
-  color: #344054;
-}
-.report-period-heading span { color: #667085; font-size: 13px; }
-@media (max-width: 850px) {
-  .report-date-grid { grid-template-columns: 1fr 1fr; }
-  .report-filter-actions { grid-column: 1 / -1; }
-}
-@media (max-width: 600px) {
-  .report-date-grid { grid-template-columns: 1fr; }
-  .report-filter-actions { grid-column: auto; }
-  .report-filter-actions .primary-btn { width: 100%; }
-  .report-period-heading { align-items: flex-start; flex-direction: column; }
 }
 `;
 
