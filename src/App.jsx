@@ -67,23 +67,103 @@ function exportRowsWithFormattedDates(rows, dateKeys = []) {
 function App() {
   const [session, setSession] = useState(null);
   const [loading, setLoading] = useState(true);
+  const [authMessage, setAuthMessage] = useState("");
 
   useEffect(() => {
     let mounted = true;
 
-    supabase.auth.getSession().then(({ data }) => {
-      if (mounted) {
-        setSession(data.session);
-        setLoading(false);
+    async function initializeAuth() {
+      try {
+        const url = new URL(window.location.href);
+        const code = url.searchParams.get("code");
+
+        if (code) {
+          const { data, error } = await supabase.auth.exchangeCodeForSession(code);
+
+          if (error) {
+            console.error("Email confirmation code exchange failed:", error);
+            if (mounted) {
+              setAuthMessage(
+                "Email imethibitishwa, lakini session haikufunguka. Jaribu kuingia tena kwa email na password yako."
+              );
+            }
+          } else if (data?.session && mounted) {
+            setSession(data.session);
+          }
+
+          url.searchParams.delete("code");
+          window.history.replaceState(
+            {},
+            document.title,
+            url.pathname + url.search + url.hash
+          );
+        }
+
+        const tokenHash = url.searchParams.get("token_hash");
+        const tokenType = url.searchParams.get("type");
+
+        if (!code && tokenHash && tokenType === "email") {
+          const { data, error } = await supabase.auth.verifyOtp({
+            token_hash: tokenHash,
+            type: "email",
+          });
+
+          if (error) {
+            console.error("Email confirmation verification failed:", error);
+            if (mounted) {
+              setAuthMessage(
+                "Link ya confirmation imekwisha au haikukamilika. Tuma confirmation email nyingine."
+              );
+            }
+          } else if (data?.session && mounted) {
+            setSession(data.session);
+          }
+
+          url.searchParams.delete("token_hash");
+          url.searchParams.delete("type");
+          window.history.replaceState(
+            {},
+            document.title,
+            url.pathname + url.search + url.hash
+          );
+        }
+
+        const hashParams = new URLSearchParams(
+          window.location.hash.replace(/^#/, "")
+        );
+        const hashError = hashParams.get("error_description");
+
+        if (hashError && mounted) {
+          setAuthMessage(decodeURIComponent(hashError.replace(/\+/g, " ")));
+        }
+
+        const { data: sessionData } = await supabase.auth.getSession();
+
+        if (mounted) {
+          setSession(sessionData.session);
+          setLoading(false);
+        }
+      } catch (err) {
+        console.error("Auth initialization failed:", err);
+
+        if (mounted) {
+          setAuthMessage(
+            "Kuna tatizo kwenye confirmation ya email. Jaribu tena."
+          );
+          setLoading(false);
+        }
       }
-    });
+    }
 
     const {
       data: { subscription },
     } = supabase.auth.onAuthStateChange((_event, newSession) => {
+      if (!mounted) return;
       setSession(newSession);
       setLoading(false);
     });
+
+    initializeAuth();
 
     return () => {
       mounted = false;
@@ -105,31 +185,299 @@ function App() {
   }
 
   if (!session) {
-    return <Login />;
+    return <Login initialMessage={authMessage} />;
   }
 
   return <System user={session.user} />;
 }
 
-function Login() {
+const REGISTRATION_PLANS = [
+  {
+    id: "FREE_TRIAL",
+    title: "FREE TRIAL",
+    price: "TZS 0",
+    period: "Siku 14",
+    description: "Jaribu mfumo bila malipo kwa siku 14.",
+  },
+  {
+    id: "MONTHLY",
+    title: "MWEZI",
+    price: "TZS 10,000",
+    period: "Siku 30",
+    description: "Mpango wa mwezi kwa biashara yako.",
+  },
+  {
+    id: "YEARLY",
+    title: "MWAKA",
+    price: "TZS 50,000",
+    period: "Mwaka 1",
+    description: "Mpango wa mwaka mmoja kwa biashara yako.",
+  },
+];
+
+const FALLBACK_COUNTRIES = [
+  { name: "Tanzania", iso2: "TZ" },
+  { name: "Kenya", iso2: "KE" },
+  { name: "Uganda", iso2: "UG" },
+  { name: "Rwanda", iso2: "RW" },
+  { name: "Burundi", iso2: "BI" },
+  { name: "Zambia", iso2: "ZM" },
+  { name: "Malawi", iso2: "MW" },
+  { name: "Mozambique", iso2: "MZ" },
+  { name: "South Africa", iso2: "ZA" },
+  { name: "United States", iso2: "US" },
+  { name: "United Kingdom", iso2: "GB" },
+];
+
+async function fetchCountries() {
+  try {
+    const response = await fetch("https://countriesnow.space/api/v0.1/countries/positions");
+    if (!response.ok) throw new Error("countries request failed");
+    const json = await response.json();
+    const rows = Array.isArray(json?.data) ? json.data : [];
+    return rows
+      .map((x) => ({ name: x.name, iso2: x.iso2 }))
+      .filter((x) => x.name && x.iso2)
+      .sort((a, b) => a.name.localeCompare(b.name));
+  } catch {
+    return FALLBACK_COUNTRIES;
+  }
+}
+
+async function fetchStates(country) {
+  if (!country) return [];
+  try {
+    const response = await fetch("https://countriesnow.space/api/v0.1/countries/states", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ country }),
+    });
+    if (!response.ok) throw new Error("states request failed");
+    const json = await response.json();
+    return (json?.data?.states || []).map((x) => x.name).filter(Boolean);
+  } catch {
+    return [];
+  }
+}
+
+async function fetchCities(country, state) {
+  if (!country || !state) return [];
+  try {
+    const response = await fetch("https://countriesnow.space/api/v0.1/countries/state/cities", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ country, state }),
+    });
+    if (!response.ok) throw new Error("cities request failed");
+    const json = await response.json();
+    return Array.isArray(json?.data) ? json.data.filter(Boolean) : [];
+  } catch {
+    return [];
+  }
+}
+
+function Login({ initialMessage = "" }) {
+  const [mode, setMode] = useState("login");
+
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
+
+  const [businessName, setBusinessName] = useState("");
+  const [fullName, setFullName] = useState("");
+  const [phone, setPhone] = useState("");
+  const [address, setAddress] = useState("");
+  const [country, setCountry] = useState("");
+  const [region, setRegion] = useState("");
+  const [district, setDistrict] = useState("");
+  const [ward, setWard] = useState("");
+  const [street, setStreet] = useState("");
+  const [selectedPlan, setSelectedPlan] = useState("FREE_TRIAL");
+  const [countries, setCountries] = useState(FALLBACK_COUNTRIES);
+  const [regions, setRegions] = useState([]);
+  const [cities, setCities] = useState([]);
+  const [locationLoading, setLocationLoading] = useState(false);
+  const [confirmPassword, setConfirmPassword] = useState("");
+
   const [showPassword, setShowPassword] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
+  const [message, setMessage] = useState(initialMessage);
 
-  async function login(e) {
+  useEffect(() => {
+    if (mode !== "register") return;
+    let alive = true;
+    fetchCountries().then((rows) => {
+      if (alive && rows.length) setCountries(rows);
+    });
+    return () => {
+      alive = false;
+    };
+  }, [mode]);
+
+  useEffect(() => {
+    if (mode !== "register" || !country) {
+      setRegions([]);
+      return;
+    }
+    let alive = true;
+    setLocationLoading(true);
+    setRegion("");
+    setDistrict("");
+    setCities([]);
+    fetchStates(country).then((rows) => {
+      if (alive) {
+        setRegions(rows);
+        setLocationLoading(false);
+      }
+    });
+    return () => {
+      alive = false;
+    };
+  }, [mode, country]);
+
+  useEffect(() => {
+    if (mode !== "register" || !country || !region) {
+      setCities([]);
+      return;
+    }
+    let alive = true;
+    setLocationLoading(true);
+    setDistrict("");
+    fetchCities(country, region).then((rows) => {
+      if (alive) {
+        setCities(rows);
+        setLocationLoading(false);
+      }
+    });
+    return () => {
+      alive = false;
+    };
+  }, [mode, country, region]);
+
+  function switchMode(nextMode) {
+    setMode(nextMode);
+    setError("");
+    setMessage("");
+  }
+
+  async function handleLogin(e) {
     e.preventDefault();
     setError("");
+    setMessage("");
     setBusy(true);
 
     const { error } = await supabase.auth.signInWithPassword({
-      email,
+      email: email.trim(),
       password,
     });
 
     if (error) {
-      setError("Email au password sio sahihi.");
+      const authError = String(error.message || "").toLowerCase();
+
+      if (authError.includes("email not confirmed")) {
+        setError(
+          "Email yako bado haijathibitishwa. Fungua confirmation email ya Supabase, kisha ujaribu INGIA tena."
+        );
+      } else if (authError.includes("invalid login credentials")) {
+        setError("Email au password sio sahihi.");
+      } else {
+        setError(error.message || "Login imeshindikana.");
+      }
+    }
+
+    setBusy(false);
+  }
+
+  async function handleRegister(e) {
+    e.preventDefault();
+
+    setError("");
+    setMessage("");
+
+    if (password.length < 6) {
+      setError("Password lazima iwe na angalau characters 6.");
+      return;
+    }
+
+    if (password !== confirmPassword) {
+      setError("Password hazifanani.");
+      return;
+    }
+
+    if (!businessName.trim()) {
+      setError("Weka jina la biashara.");
+      return;
+    }
+
+    if (!fullName.trim()) {
+      setError("Weka jina la mmiliki.");
+      return;
+    }
+
+    if (!phone.trim()) {
+      setError("Weka namba ya simu.");
+      return;
+    }
+
+    if (!country) {
+      setError("Chagua nchi.");
+      return;
+    }
+
+    if (!region) {
+      setError("Chagua region/state.");
+      return;
+    }
+
+    if (!district.trim()) {
+      setError("Weka district/city.");
+      return;
+    }
+
+    if (!ward.trim()) {
+      setError("Weka ward.");
+      return;
+    }
+
+    if (!street.trim()) {
+      setError("Weka street / eneo la biashara.");
+      return;
+    }
+
+    setBusy(true);
+
+    const { data, error } = await supabase.auth.signUp({
+      email: email.trim(),
+      password,
+      options: {
+        emailRedirectTo: window.location.origin,
+        data: {
+          business_name: businessName.trim(),
+          full_name: fullName.trim(),
+          phone: phone.trim(),
+          address: address.trim(),
+          selected_plan: selectedPlan,
+          country: country.trim(),
+          region: region.trim(),
+          district: district.trim(),
+          ward: ward.trim(),
+          street: street.trim(),
+        },
+      },
+    });
+
+    if (error) {
+      setError(error.message);
+      setBusy(false);
+      return;
+    }
+
+    if (data?.session) {
+      setMessage("Account imetengenezwa. Inafungua mfumo...");
+    } else {
+      setMessage(
+        "Account imetengenezwa. Kama email confirmation imewashwa, fungua email yako kuthibitisha account."
+      );
     }
 
     setBusy(false);
@@ -151,48 +499,235 @@ function Login() {
       </div>
 
       <div className="login-side">
-        <form className="login-card" onSubmit={login}>
+        <div className="login-card">
           <div className="mobile-logo">B</div>
-          <h2>Karibu tena</h2>
-          <p className="muted">Ingia kwenye mfumo wa Bless Stationery</p>
 
-          {error && <div className="error-box">{error}</div>}
-
-          <label>Email</label>
-          <input
-            type="email"
-            placeholder="Weka email yako"
-            value={email}
-            onChange={(e) => setEmail(e.target.value)}
-            required
-          />
-
-          <label>Password</label>
-          <div className="password-wrap">
-            <input
-              type={showPassword ? "text" : "password"}
-              placeholder="Weka password"
-              value={password}
-              onChange={(e) => setPassword(e.target.value)}
-              required
-            />
+          <div className="login-tabs">
             <button
               type="button"
-              className="show-password"
-              onClick={() => setShowPassword(!showPassword)}
+              className={mode === "login" ? "active" : ""}
+              onClick={() => switchMode("login")}
             >
-              {showPassword ? "Ficha" : "Onyesha"}
+              INGIA
+            </button>
+            <button
+              type="button"
+              className={mode === "register" ? "active" : ""}
+              onClick={() => switchMode("register")}
+            >
+              JISAJILI
             </button>
           </div>
 
-          <button className="primary-btn login-btn" disabled={busy}>
-            {busy ? "Inaingia..." : "INGIA KWENYE MFUMO"}
-          </button>
+          {mode === "login" ? (
+            <form onSubmit={handleLogin}>
+              <h2>Karibu tena</h2>
+              <p className="muted">Ingia kwenye mfumo wa Bless Stationery</p>
+
+              {error && <div className="error-box">{error}</div>}
+              {message && <div className="success-box">{message}</div>}
+
+              <label>Email</label>
+              <input
+                type="email"
+                placeholder="Weka email yako"
+                value={email}
+                onChange={(e) => setEmail(e.target.value)}
+                required
+              />
+
+              <button className="primary-btn login-btn" disabled={busy}>
+                {busy ? "Inaingia..." : "INGIA KWENYE MFUMO"}
+              </button>
+
+              <p className="register-switch">
+                Huna account?{" "}
+                <button type="button" onClick={() => switchMode("register")}>
+                  Jisajili hapa
+                </button>
+              </p>
+            </form>
+          ) : (
+            <form onSubmit={handleRegister}>
+              <h2>Fungua Account</h2>
+              <p className="muted">Anzisha mfumo wa biashara yako</p>
+
+              {error && <div className="error-box">{error}</div>}
+              {message && <div className="success-box">{message}</div>}
+
+              <label>Jina la Biashara</label>
+              <input
+                type="text"
+                placeholder="Mfano: Bless Stationery"
+                value={businessName}
+                onChange={(e) => setBusinessName(e.target.value)}
+                required
+              />
+
+              <label>Jina la Mmiliki</label>
+              <input
+                type="text"
+                placeholder="Jina lako kamili"
+                value={fullName}
+                onChange={(e) => setFullName(e.target.value)}
+                required
+              />
+
+              <label>Email</label>
+              <input
+                type="email"
+                placeholder="mfano@email.com"
+                value={email}
+                onChange={(e) => setEmail(e.target.value)}
+                required
+              />
+
+              <label>Phone</label>
+              <input
+                type="tel"
+                placeholder="07XXXXXXXX"
+                value={phone}
+                onChange={(e) => setPhone(e.target.value)}
+                required
+              />
+
+              <div className="registration-section-title">Chagua Mpango</div>
+              <div className="plan-grid">
+                {REGISTRATION_PLANS.map((plan) => (
+                  <button
+                    key={plan.id}
+                    type="button"
+                    className={`plan-card ${selectedPlan === plan.id ? "selected" : ""}`}
+                    onClick={() => setSelectedPlan(plan.id)}
+                  >
+                    <strong>{plan.title}</strong>
+                    <span className="plan-price">{plan.price}</span>
+                    <span className="plan-period">{plan.period}</span>
+                    <small>{plan.description}</small>
+                  </button>
+                ))}
+              </div>
+
+              <div className="registration-section-title">Mahali pa Biashara</div>
+
+              <label>Nchi</label>
+              <select value={country} onChange={(e) => setCountry(e.target.value)} required>
+                <option value="">Chagua nchi</option>
+                {countries.map((item) => (
+                  <option value={item.name} key={`${item.iso2}-${item.name}`}>
+                    {item.name}
+                  </option>
+                ))}
+              </select>
+
+              <label>Region / State</label>
+              <select
+                value={region}
+                onChange={(e) => setRegion(e.target.value)}
+                required
+                disabled={!country || locationLoading}
+              >
+                <option value="">
+                  {locationLoading ? "Inapakia..." : "Chagua region / state"}
+                </option>
+                {regions.map((item) => (
+                  <option value={item} key={item}>{item}</option>
+                ))}
+              </select>
+
+              <label>District / City</label>
+              {cities.length > 0 ? (
+                <select
+                  value={district}
+                  onChange={(e) => setDistrict(e.target.value)}
+                  required
+                  disabled={!region}
+                >
+                  <option value="">Chagua district / city</option>
+                  {cities.map((item) => (
+                    <option value={item} key={item}>{item}</option>
+                  ))}
+                </select>
+              ) : (
+                <input
+                  type="text"
+                  placeholder="Mfano: Ilala / Dar es Salaam"
+                  value={district}
+                  onChange={(e) => setDistrict(e.target.value)}
+                  required
+                />
+              )}
+
+              <label>Ward</label>
+              <input
+                type="text"
+                placeholder="Mfano: Kariakoo"
+                value={ward}
+                onChange={(e) => setWard(e.target.value)}
+                required
+              />
+
+              <label>Street / Eneo la Biashara</label>
+              <input
+                type="text"
+                placeholder="Mfano: Msimbazi Street, Plot 12"
+                value={street}
+                onChange={(e) => setStreet(e.target.value)}
+                required
+              />
+
+              <label>Address ya Ziada (optional)</label>
+              <input
+                type="text"
+                placeholder="Maelezo ya ziada ya anwani"
+                value={address}
+                onChange={(e) => setAddress(e.target.value)}
+              />
+
+              <label>Password</label>
+              <div className="password-wrap">
+                <input
+                  type={showPassword ? "text" : "password"}
+                  placeholder="Weka password"
+                  value={password}
+                  onChange={(e) => setPassword(e.target.value)}
+                  required
+                />
+                <button
+                  type="button"
+                  className="show-password"
+                  onClick={() => setShowPassword(!showPassword)}
+                >
+                  {showPassword ? "Ficha" : "Onyesha"}
+                </button>
+              </div>
+
+              <label>Confirm Password</label>
+              <input
+                type={showPassword ? "text" : "password"}
+                placeholder="Rudia password"
+                value={confirmPassword}
+                onChange={(e) => setConfirmPassword(e.target.value)}
+                required
+              />
+
+              <button className="primary-btn login-btn" disabled={busy}>
+                {busy ? "Inatengeneza account..." : "JISAJILI"}
+              </button>
+
+              <p className="register-switch">
+                Tayari una account?{" "}
+                <button type="button" onClick={() => switchMode("login")}>
+                  Ingia hapa
+                </button>
+              </p>
+            </form>
+          )}
 
           <p className="login-footer">
             © {new Date().getFullYear()} Bless Stationery
           </p>
-        </form>
+        </div>
       </div>
     </div>
   );
@@ -3015,6 +3550,7 @@ button {
 
 .login-side {
   display: flex;
+  overflow-y: auto;
   justify-content: center;
   align-items: center;
   padding: 30px;
@@ -3028,6 +3564,55 @@ button {
   box-shadow: 0 25px 70px rgba(10, 30, 70, .12);
 }
 
+.login-tabs {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 6px;
+  background: #eef2f7;
+  padding: 5px;
+  border-radius: 12px;
+  margin-bottom: 24px;
+}
+
+.login-tabs button {
+  border: 0;
+  background: transparent;
+  color: #65738a;
+  padding: 10px 12px;
+  border-radius: 9px;
+  font-weight: 800;
+}
+
+.login-tabs button.active {
+  background: white;
+  color: #1262dc;
+  box-shadow: 0 2px 8px rgba(10, 30, 70, .08);
+}
+
+.success-box {
+  background: #effaf2;
+  color: #21743a;
+  border: 1px solid #bde7c8;
+  padding: 12px;
+  border-radius: 10px;
+  margin-bottom: 15px;
+}
+
+.register-switch {
+  text-align: center;
+  color: #718096;
+  font-size: 13px;
+  margin: 18px 0 0;
+}
+
+.register-switch button {
+  border: 0;
+  background: transparent;
+  color: #1262dc;
+  font-weight: 800;
+  padding: 0;
+}
+
 .login-card h2 {
   font-size: 30px;
   margin: 0 0 8px;
@@ -3037,6 +3622,83 @@ button {
   color: #718096;
   margin-top: 0;
   margin-bottom: 28px;
+}
+
+.registration-section-title {
+  margin-top: 22px;
+  margin-bottom: 10px;
+  font-size: 13px;
+  font-weight: 900;
+  color: #163c77;
+  text-transform: uppercase;
+  letter-spacing: .4px;
+}
+
+.plan-grid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 10px;
+  margin-bottom: 6px;
+}
+
+.plan-card {
+  border: 1px solid #d9e0eb;
+  background: #fff;
+  border-radius: 14px;
+  padding: 13px 10px;
+  text-align: left;
+  color: #172033;
+  min-height: 145px;
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+
+.plan-card:hover {
+  border-color: #1970ff;
+}
+
+.plan-card.selected {
+  border: 2px solid #1970ff;
+  background: #f2f7ff;
+  box-shadow: 0 0 0 3px rgba(25,112,255,.08);
+}
+
+.plan-price {
+  font-size: 15px;
+  font-weight: 900;
+  color: #0b4dcc;
+}
+
+.plan-period {
+  font-size: 12px;
+  font-weight: 700;
+  color: #52627a;
+}
+
+.plan-card small {
+  line-height: 1.35;
+  color: #718096;
+}
+
+.login-card select {
+  width: 100%;
+  border: 1px solid #d9e0eb;
+  border-radius: 11px;
+  padding: 13px 14px;
+  outline: none;
+  background: white;
+  margin-bottom: 0;
+}
+
+.login-card select:focus {
+  border-color: #1970ff;
+  box-shadow: 0 0 0 3px rgba(25,112,255,.1);
+}
+
+.login-card select:disabled {
+  background: #f3f5f8;
+  color: #8b95a7;
 }
 
 .login-card label,
@@ -4323,7 +4985,8 @@ td strong {
   .stats-grid,
   .form-grid,
   .service-grid,
-  .staff-grid {
+  .staff-grid,
+  .plan-grid {
     grid-template-columns: 1fr;
   }
 
