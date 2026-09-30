@@ -244,6 +244,45 @@ async function fetchCountries() {
   }
 }
 
+const TANZANIA_REGIONS = [
+  "Arusha",
+  "Dar es Salaam",
+  "Dodoma",
+  "Geita",
+  "Iringa",
+  "Kagera",
+  "Katavi",
+  "Kigoma",
+  "Kilimanjaro",
+  "Lindi",
+  "Manyara",
+  "Mara",
+  "Mbeya",
+  "Morogoro",
+  "Mtwara",
+  "Mwanza",
+  "Njombe",
+  "Pemba North",
+  "Pemba South",
+  "Pwani",
+  "Rukwa",
+  "Ruvuma",
+  "Shinyanga",
+  "Simiyu",
+  "Singida",
+  "Songwe",
+  "Tabora",
+  "Tanga",
+  "Zanzibar North",
+  "Zanzibar South",
+  "Zanzibar West",
+];
+
+function isTanzania(country) {
+  const value = String(country || "").trim().toLowerCase();
+  return value === "tanzania" || value === "tanzania, united republic of";
+}
+
 async function fetchStates(country) {
   if (!country) return [];
   try {
@@ -254,8 +293,12 @@ async function fetchStates(country) {
     });
     if (!response.ok) throw new Error("states request failed");
     const json = await response.json();
-    return (json?.data?.states || []).map((x) => x.name).filter(Boolean);
+    const rows = (json?.data?.states || []).map((x) => x.name).filter(Boolean);
+    if (rows.length) return rows;
+    if (isTanzania(country)) return TANZANIA_REGIONS;
+    return [];
   } catch {
+    if (isTanzania(country)) return TANZANIA_REGIONS;
     return [];
   }
 }
@@ -536,6 +579,24 @@ function Login({ initialMessage = "" }) {
                 required
               />
 
+              <label>Password</label>
+              <div className="password-wrap">
+                <input
+                  type={showPassword ? "text" : "password"}
+                  placeholder="Weka password yako"
+                  value={password}
+                  onChange={(e) => setPassword(e.target.value)}
+                  required
+                />
+                <button
+                  type="button"
+                  className="show-password"
+                  onClick={() => setShowPassword(!showPassword)}
+                >
+                  {showPassword ? "Ficha" : "Onyesha"}
+                </button>
+              </div>
+
               <button className="primary-btn login-btn" disabled={busy}>
                 {busy ? "Inaingia..." : "INGIA KWENYE MFUMO"}
               </button>
@@ -738,11 +799,36 @@ function System({ user }) {
   const [mobileMenu, setMobileMenu] = useState(false);
   const [staff, setStaff] = useState(null);
   const [business, setBusiness] = useState(null);
+  const [isPlatformAdmin, setIsPlatformAdmin] = useState(false);
+  const [platformAdminLoading, setPlatformAdminLoading] = useState(true);
+  const [subscriptionAccess, setSubscriptionAccess] = useState(null);
+  const [subscriptionLoading, setSubscriptionLoading] = useState(true);
   const [refresh, setRefresh] = useState(0);
 
   useEffect(() => {
+    loadPlatformAdmin();
     loadStaff();
   }, [user.id]);
+
+  async function loadPlatformAdmin() {
+    setPlatformAdminLoading(true);
+
+    const { data, error } = await supabase
+      .from("platform_admins")
+      .select("id, active")
+      .eq("user_id", user.id)
+      .eq("active", true)
+      .maybeSingle();
+
+    if (error) {
+      console.error("Failed to check platform admin:", error);
+      setIsPlatformAdmin(false);
+    } else {
+      setIsPlatformAdmin(!!data);
+    }
+
+    setPlatformAdminLoading(false);
+  }
 
   async function loadStaff() {
     const { data, error } = await supabase
@@ -760,6 +846,33 @@ function System({ user }) {
 
     setStaff(data || null);
     setBusiness(data?.businesses || null);
+
+    if (data?.business_id) {
+      await checkSubscriptionAccess(data.business_id);
+    } else {
+      setSubscriptionAccess(null);
+      setSubscriptionLoading(false);
+    }
+  }
+
+  async function checkSubscriptionAccess(targetBusinessId) {
+    setSubscriptionLoading(true);
+
+    const { data, error } = await supabase.rpc(
+      "business_subscription_active",
+      { target_business_id: targetBusinessId }
+    );
+
+    if (error) {
+      console.error("Failed to check subscription:", error);
+      // Fail closed for normal customer businesses. Platform admins are
+      // handled separately and internal businesses are exempt in the DB.
+      setSubscriptionAccess(false);
+    } else {
+      setSubscriptionAccess(data === true);
+    }
+
+    setSubscriptionLoading(false);
   }
 
   function go(name) {
@@ -819,6 +932,12 @@ function System({ user }) {
     ),
     reports: <ReportsPage businessId={businessId} refresh={refresh} />,
     staff: <StaffPage businessId={businessId} refresh={refresh} />,
+    credits: <CreditPage businessId={businessId} staff={staff} refresh={refresh} />,
+    attendance: <AttendancePage businessId={businessId} staff={staff} refresh={refresh} />,
+    saasOverview: <SaaSAdminPage section="overview" refresh={refresh} />,
+    saasCustomers: <SaaSAdminPage section="customers" refresh={refresh} />,
+    saasSubscriptions: <SaaSAdminPage section="subscriptions" refresh={refresh} />,
+    saasPayments: <SaaSAdminPage section="payments" refresh={refresh} />,
   };
 
   return (
@@ -911,6 +1030,54 @@ function System({ user }) {
             text="Staff"
             onClick={() => go("staff")}
           />
+
+          <NavButton
+            active={page === "credits"}
+            icon="💳"
+            text="Madeni / Credit"
+            onClick={() => go("credits")}
+          />
+
+          <NavButton
+            active={page === "attendance"}
+            icon="🕐"
+            text="Staff Attendance"
+            onClick={() => go("attendance")}
+          />
+
+          {isPlatformAdmin && (
+            <>
+              <div className="nav-title platform-nav-title">SAAS ADMIN</div>
+
+              <NavButton
+                active={page === "saasOverview"}
+                icon="◈"
+                text="Overview"
+                onClick={() => go("saasOverview")}
+              />
+
+              <NavButton
+                active={page === "saasCustomers"}
+                icon="👥"
+                text="Customers"
+                onClick={() => go("saasCustomers")}
+              />
+
+              <NavButton
+                active={page === "saasSubscriptions"}
+                icon="💳"
+                text="Subscriptions"
+                onClick={() => go("saasSubscriptions")}
+              />
+
+              <NavButton
+                active={page === "saasPayments"}
+                icon="💰"
+                text="Payments"
+                onClick={() => go("saasPayments")}
+              />
+            </>
+          )}
         </nav>
 
         <button className="logout-btn" onClick={logout}>
@@ -952,6 +1119,20 @@ function System({ user }) {
                 ? "Deposits"
                 : page === "reports"
                 ? "Reports"
+                : page === "staff"
+                ? "Staff"
+                : page === "credits"
+                ? "Madeni / Credit"
+                : page === "attendance"
+                ? "Staff Attendance"
+                : page === "saasOverview"
+                ? "SaaS Overview"
+                : page === "saasCustomers"
+                ? "Customers"
+                : page === "saasSubscriptions"
+                ? "Subscriptions"
+                : page === "saasPayments"
+                ? "Payments"
                 : "Staff"}
             </strong>
             <span className="topbar-date">
@@ -976,11 +1157,23 @@ function System({ user }) {
         </header>
 
         <section className="content">
-          {!businessId ? (
+          {isPlatformAdmin && page.startsWith("saas") ? (
+            pages[page]
+          ) : !businessId ? (
             <div className="panel">
               <h3>Business profile haijapatikana</h3>
               <p>Account hii haijaunganishwa na biashara. Wasiliana na administrator.</p>
             </div>
+          ) : subscriptionLoading ? (
+            <div className="page-loading">
+              <div className="spinner" />
+              <p>Inathibitisha subscription...</p>
+            </div>
+          ) : !isPlatformAdmin && subscriptionAccess === false ? (
+            <SubscriptionRequiredPage
+              business={business}
+              onRefresh={() => checkSubscriptionAccess(businessId)}
+            />
           ) : (
             pages[page]
           )}
@@ -996,6 +1189,484 @@ function NavButton({ active, icon, text, onClick }) {
       <span className="nav-icon">{icon}</span>
       <span>{text}</span>
     </button>
+  );
+}
+
+
+function SubscriptionRequiredPage({ business, onRefresh }) {
+  const [payingPlan, setPayingPlan] = useState("");
+  const [error, setError] = useState("");
+  const [message, setMessage] = useState("");
+
+  async function startPayment(plan) {
+    setError("");
+    setMessage("");
+    setPayingPlan(plan);
+
+    try {
+      const { data, error: functionError } = await supabase.functions.invoke(
+        "super-function",
+        { body: { action: "create-payment", plan } }
+      );
+
+      if (functionError) {
+        throw new Error(functionError.message || "Payment request imeshindikana.");
+      }
+
+      const checkoutUrl = data?.checkout_url || data?.redirect_url;
+      if (!checkoutUrl) {
+        throw new Error(data?.message || "Pesapal haikurudisha checkout URL.");
+      }
+
+      setMessage("Inafungua ukurasa wa malipo wa Pesapal...");
+      window.location.href = checkoutUrl;
+    } catch (err) {
+      console.error("Pesapal payment start failed:", err);
+      setError(err?.message || "Imeshindikana kuanzisha malipo. Jaribu tena.");
+      setPayingPlan("");
+    }
+  }
+
+  return (
+    <div className="panel subscription-gate">
+      <div className="subscription-gate-icon">💳</div>
+      <h2>Subscription inahitajika</h2>
+      <p>
+        Muda wa FREE TRIAL wa <strong>{business?.business_name || "biashara yako"}</strong>
+        umeisha au subscription haijawa ACTIVE.
+      </p>
+      <p className="muted">
+        Chagua mpango wako na ukamilishe malipo kupitia Pesapal.
+      </p>
+
+      {message && <div className="success-box">{message}</div>}
+      {error && <div className="error-box">{error}</div>}
+
+      <div className="subscription-gate-actions" style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
+        <button
+          className="primary-btn"
+          disabled={!!payingPlan}
+          onClick={() => startPayment("MONTHLY")}
+        >
+          {payingPlan === "MONTHLY" ? "Inaandaa malipo..." : "LIPA MWEZI — TZS 10,000"}
+        </button>
+        <button
+          className="secondary-btn"
+          disabled={!!payingPlan}
+          onClick={() => startPayment("YEARLY")}
+        >
+          {payingPlan === "YEARLY" ? "Inaandaa malipo..." : "LIPA MWAKA — TZS 50,000"}
+        </button>
+        <button
+          className="secondary-btn"
+          disabled={!!payingPlan}
+          onClick={onRefresh}
+        >
+          ↻ Angalia Tena
+        </button>
+      </div>
+    </div>
+  );
+}
+
+function SaaSAdminPage({ section = "overview", refresh }) {
+  const [businesses, setBusinesses] = useState([]);
+  const [staffRows, setStaffRows] = useState([]);
+  const [subscriptions, setSubscriptions] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [search, setSearch] = useState("");
+  const [statusFilter, setStatusFilter] = useState("ALL");
+  const [planFilter, setPlanFilter] = useState("ALL");
+  const [selectedBusinessId, setSelectedBusinessId] = useState(null);
+
+  useEffect(() => {
+    load();
+  }, [refresh]);
+
+  async function load() {
+    setLoading(true);
+
+    const [businessResult, staffResult, subscriptionResult] = await Promise.all([
+      supabase
+        .from("businesses")
+        .select("*")
+        .order("created_at", { ascending: false }),
+      supabase
+        .from("staff")
+        .select("id, business_id, staff_name, role, user_id, active")
+        .eq("role", "ADMIN"),
+      supabase
+        .from("subscriptions")
+        .select("*")
+        .order("created_at", { ascending: false }),
+    ]);
+
+    if (businessResult.error) {
+      console.error("SaaS businesses error:", businessResult.error);
+      alert(businessResult.error.message);
+    }
+
+    if (staffResult.error) {
+      console.error("SaaS staff error:", staffResult.error);
+    }
+
+    if (subscriptionResult.error) {
+      console.error("SaaS subscriptions error:", subscriptionResult.error);
+    }
+
+    setBusinesses(businessResult.data || []);
+    setStaffRows(staffResult.data || []);
+    setSubscriptions(subscriptionResult.data || []);
+    setLoading(false);
+  }
+
+  const ownerMap = useMemo(() => {
+    const map = {};
+    staffRows.forEach((row) => {
+      if (!map[row.business_id]) map[row.business_id] = row.staff_name;
+    });
+    return map;
+  }, [staffRows]);
+
+  const latestSubscriptionMap = useMemo(() => {
+    const map = {};
+    subscriptions.forEach((row) => {
+      if (!map[row.business_id]) map[row.business_id] = row;
+    });
+    return map;
+  }, [subscriptions]);
+
+  const customerRows = useMemo(() => {
+    const q = search.trim().toLowerCase();
+
+    return businesses.filter((business) => {
+      const latest = latestSubscriptionMap[business.id];
+      const status = latest?.status || business.subscription_status || "-";
+      const plan = latest?.plan || business.plan || "-";
+      const owner = ownerMap[business.id] || "-";
+
+      const matchesSearch = !q || [
+        business.business_name,
+        owner,
+        business.email,
+        business.phone,
+        business.country,
+        business.region,
+        business.district,
+        business.ward,
+        business.street,
+      ].some((value) => String(value || "").toLowerCase().includes(q));
+
+      const matchesStatus = statusFilter === "ALL" || status === statusFilter;
+      const matchesPlan = planFilter === "ALL" || plan === planFilter;
+
+      return matchesSearch && matchesStatus && matchesPlan;
+    });
+  }, [businesses, ownerMap, latestSubscriptionMap, search, statusFilter, planFilter]);
+
+  const stats = useMemo(() => {
+    const rows = businesses.map((business) => {
+      const latest = latestSubscriptionMap[business.id];
+      return latest?.status || business.subscription_status || "-";
+    });
+
+    return {
+      total: businesses.length,
+      active: rows.filter((x) => x === "ACTIVE").length,
+      trialing: rows.filter((x) => x === "TRIALING").length,
+      pending: rows.filter((x) => x === "PENDING_PAYMENT").length,
+      expired: rows.filter((x) => x === "EXPIRED").length,
+    };
+  }, [businesses, latestSubscriptionMap]);
+
+  const selectedBusiness = businesses.find((x) => x.id === selectedBusinessId) || null;
+  const selectedSubscriptions = selectedBusinessId
+    ? subscriptions.filter((x) => x.business_id === selectedBusinessId)
+    : [];
+
+  function statusLabel(status) {
+    const labels = {
+      ACTIVE: "ACTIVE",
+      TRIALING: "TRIALING",
+      PENDING_PAYMENT: "PENDING PAYMENT",
+      EXPIRED: "EXPIRED",
+      CANCELLED: "CANCELLED",
+    };
+    return labels[status] || status || "-";
+  }
+
+  function planLabel(plan) {
+    const labels = {
+      FREE_TRIAL: "FREE TRIAL",
+      MONTHLY: "MWEZI",
+      YEARLY: "MWAKA",
+    };
+    return labels[plan] || plan || "-";
+  }
+
+  function statusClass(status) {
+    return `saas-status ${String(status || "unknown").toLowerCase().replace(/_/g, "-")}`;
+  }
+
+  if (loading) return <PageLoading />;
+
+  if (section === "overview") {
+    return (
+      <div>
+        <PageTitle
+          title="SaaS Overview"
+          subtitle="Muhtasari wa businesses zote zilizo kwenye platform yako."
+        />
+
+        <div className="stats-grid">
+          <StatCard title="Customers Wote" value={stats.total} icon="👥" tone="blue" />
+          <StatCard title="Active" value={stats.active} icon="✓" tone="green" />
+          <StatCard title="Free Trial" value={stats.trialing} icon="⏱" tone="purple" />
+          <StatCard title="Pending Payment" value={stats.pending} icon="💳" tone="orange" />
+        </div>
+
+        <div className="stats-grid small-stats">
+          <StatCard title="Expired" value={stats.expired} icon="⚠" tone="red" />
+          <StatCard title="Mwezi" value={businesses.filter((b) => (latestSubscriptionMap[b.id]?.plan || b.plan) === "MONTHLY").length} icon="📅" />
+          <StatCard title="Mwaka" value={businesses.filter((b) => (latestSubscriptionMap[b.id]?.plan || b.plan) === "YEARLY").length} icon="🏆" />
+          <StatCard title="Subscriptions" value={subscriptions.length} icon="▣" />
+        </div>
+
+        <div className="panel">
+          <div className="panel-header">
+            <div>
+              <h3>Registrations za Karibuni</h3>
+              <span>Businesses mpya zilizojiunga na platform</span>
+            </div>
+            <button className="text-btn" onClick={() => setSelectedBusinessId(null)}>
+              {stats.total} Customers
+            </button>
+          </div>
+
+          <div className="saas-table-wrap">
+            <table className="saas-table">
+              <thead>
+                <tr>
+                  <th>Business</th>
+                  <th>Owner</th>
+                  <th>Plan</th>
+                  <th>Status</th>
+                  <th>Registered</th>
+                </tr>
+              </thead>
+              <tbody>
+                {businesses.slice(0, 10).map((business) => {
+                  const latest = latestSubscriptionMap[business.id];
+                  return (
+                    <tr key={business.id} onClick={() => setSelectedBusinessId(business.id)}>
+                      <td><strong>{business.business_name}</strong></td>
+                      <td>{ownerMap[business.id] || "-"}</td>
+                      <td>{planLabel(latest?.plan || business.plan)}</td>
+                      <td><span className={statusClass(latest?.status || business.subscription_status)}>{statusLabel(latest?.status || business.subscription_status)}</span></td>
+                      <td>{formatDate(business.created_at)}</td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+
+          {!businesses.length && <EmptyState text="Bado hakuna business iliyojisajili." />}
+        </div>
+      </div>
+    );
+  }
+
+  if (section === "customers") {
+    return (
+      <div>
+        <PageTitle
+          title="Customers"
+          subtitle="Orodha ya businesses zote zilizojiunga na Bless Business SaaS."
+        />
+
+        <div className="saas-toolbar">
+          <input
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+            placeholder="Search business, owner, email, phone, location..."
+          />
+          <select value={planFilter} onChange={(e) => setPlanFilter(e.target.value)}>
+            <option value="ALL">Plans zote</option>
+            <option value="FREE_TRIAL">FREE TRIAL</option>
+            <option value="MONTHLY">MWEZI</option>
+            <option value="YEARLY">MWAKA</option>
+          </select>
+          <select value={statusFilter} onChange={(e) => setStatusFilter(e.target.value)}>
+            <option value="ALL">Status zote</option>
+            <option value="TRIALING">TRIALING</option>
+            <option value="PENDING_PAYMENT">PENDING PAYMENT</option>
+            <option value="ACTIVE">ACTIVE</option>
+            <option value="EXPIRED">EXPIRED</option>
+            <option value="CANCELLED">CANCELLED</option>
+          </select>
+          <button className="secondary-btn" onClick={load}>↻ Refresh</button>
+        </div>
+
+        <div className="panel">
+          <div className="panel-header">
+            <div>
+              <h3>{customerRows.length} Customer{customerRows.length === 1 ? "" : "s"}</h3>
+              <span>Bonyeza customer kuona maelezo yake.</span>
+            </div>
+          </div>
+
+          <div className="saas-table-wrap">
+            <table className="saas-table">
+              <thead>
+                <tr>
+                  <th>Business</th>
+                  <th>Owner</th>
+                  <th>Email</th>
+                  <th>Phone</th>
+                  <th>Location</th>
+                  <th>Plan</th>
+                  <th>Status</th>
+                  <th>Registered</th>
+                </tr>
+              </thead>
+              <tbody>
+                {customerRows.map((business) => {
+                  const latest = latestSubscriptionMap[business.id];
+                  return (
+                    <tr key={business.id} onClick={() => setSelectedBusinessId(business.id)}>
+                      <td><strong>{business.business_name}</strong></td>
+                      <td>{ownerMap[business.id] || "-"}</td>
+                      <td>{business.email || "-"}</td>
+                      <td>{business.phone || "-"}</td>
+                      <td>
+                        {[business.country, business.region, business.district].filter(Boolean).join(", ") || "-"}
+                      </td>
+                      <td>{planLabel(latest?.plan || business.plan)}</td>
+                      <td><span className={statusClass(latest?.status || business.subscription_status)}>{statusLabel(latest?.status || business.subscription_status)}</span></td>
+                      <td>{formatDate(business.created_at)}</td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+
+          {!customerRows.length && <EmptyState text="Hakuna customer anayefanana na search/filter yako." />}
+        </div>
+
+        {selectedBusiness && (
+          <div className="panel saas-detail-panel">
+            <div className="panel-header">
+              <div>
+                <h3>{selectedBusiness.business_name}</h3>
+                <span>Customer details</span>
+              </div>
+              <button className="secondary-btn" onClick={() => setSelectedBusinessId(null)}>Funga</button>
+            </div>
+
+            <div className="saas-detail-grid">
+              <div><span>Owner</span><strong>{ownerMap[selectedBusiness.id] || "-"}</strong></div>
+              <div><span>Email</span><strong>{selectedBusiness.email || "-"}</strong></div>
+              <div><span>Phone</span><strong>{selectedBusiness.phone || "-"}</strong></div>
+              <div><span>Country</span><strong>{selectedBusiness.country || "-"}</strong></div>
+              <div><span>Region</span><strong>{selectedBusiness.region || "-"}</strong></div>
+              <div><span>District / City</span><strong>{selectedBusiness.district || "-"}</strong></div>
+              <div><span>Ward</span><strong>{selectedBusiness.ward || "-"}</strong></div>
+              <div><span>Street</span><strong>{selectedBusiness.street || "-"}</strong></div>
+              <div><span>Registered</span><strong>{formatDate(selectedBusiness.created_at)}</strong></div>
+              <div><span>Plan</span><strong>{planLabel(selectedBusiness.plan)}</strong></div>
+              <div><span>Status</span><strong>{statusLabel(selectedBusiness.subscription_status)}</strong></div>
+            </div>
+
+            <h4 className="saas-subtitle">Subscription History</h4>
+            <div className="saas-table-wrap">
+              <table className="saas-table">
+                <thead>
+                  <tr><th>Plan</th><th>Amount</th><th>Status</th><th>Provider</th><th>Reference</th><th>Date</th></tr>
+                </thead>
+                <tbody>
+                  {selectedSubscriptions.map((row) => (
+                    <tr key={row.id}>
+                      <td>{planLabel(row.plan)}</td>
+                      <td>{money(row.amount)} {row.currency || "TZS"}</td>
+                      <td><span className={statusClass(row.status)}>{statusLabel(row.status)}</span></td>
+                      <td>{row.payment_provider || "-"}</td>
+                      <td>{row.payment_reference || row.provider_transaction_id || "-"}</td>
+                      <td>{formatDate(row.created_at)}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        )}
+      </div>
+    );
+  }
+
+  const paymentRows = subscriptions.filter((row) => row.payment_reference || row.provider_transaction_id || row.payment_provider || number(row.amount) > 0);
+
+  if (section === "subscriptions") {
+    return (
+      <div>
+        <PageTitle title="Subscriptions" subtitle="Subscription status na history ya businesses zote." />
+        <div className="panel">
+          <div className="saas-table-wrap">
+            <table className="saas-table">
+              <thead><tr><th>Business</th><th>Plan</th><th>Amount</th><th>Status</th><th>Start</th><th>End / Trial End</th><th>Created</th></tr></thead>
+              <tbody>
+                {subscriptions.map((row) => {
+                  const business = businesses.find((b) => b.id === row.business_id);
+                  return (
+                    <tr key={row.id}>
+                      <td><strong>{business?.business_name || "-"}</strong></td>
+                      <td>{planLabel(row.plan)}</td>
+                      <td>{money(row.amount)} {row.currency || "TZS"}</td>
+                      <td><span className={statusClass(row.status)}>{statusLabel(row.status)}</span></td>
+                      <td>{formatDate(row.started_at)}</td>
+                      <td>{formatDate(row.ends_at || row.trial_ends_at)}</td>
+                      <td>{formatDate(row.created_at)}</td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+          {!subscriptions.length && <EmptyState text="Hakuna subscription records." />}
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div>
+      <PageTitle title="Payments" subtitle="Payment records zilizopo kwa sasa. Flutterwave tutaunganisha baadaye." />
+      <div className="panel">
+        <div className="saas-table-wrap">
+          <table className="saas-table">
+            <thead><tr><th>Business</th><th>Plan</th><th>Amount</th><th>Provider</th><th>Reference</th><th>Status</th><th>Date</th></tr></thead>
+            <tbody>
+              {paymentRows.map((row) => {
+                const business = businesses.find((b) => b.id === row.business_id);
+                return (
+                  <tr key={row.id}>
+                    <td><strong>{business?.business_name || "-"}</strong></td>
+                    <td>{planLabel(row.plan)}</td>
+                    <td>{money(row.amount)} {row.currency || "TZS"}</td>
+                    <td>{row.payment_provider || "-"}</td>
+                    <td>{row.payment_reference || row.provider_transaction_id || "-"}</td>
+                    <td><span className={statusClass(row.status)}>{statusLabel(row.status)}</span></td>
+                    <td>{formatDate(row.created_at)}</td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+        {!paymentRows.length && <EmptyState text="Bado hakuna payment records. Hii itajaa tukishaunganisha payment gateway." />}
+      </div>
+    </div>
   );
 }
 
@@ -1828,6 +2499,10 @@ function SalesPage({ businessId, staff, onChanged }) {
     unit_cost: "",
     selling_price: "",
     payment_method: "CASH",
+    credit_customer_name: "",
+    credit_customer_phone: "",
+    credit_paid_amount: "0",
+    credit_due_date: "",
     sale_date: localDateTimeValue(),
   });
 
@@ -1949,6 +2624,24 @@ function SalesPage({ businessId, staff, onChanged }) {
       }
     }
 
+    if (form.payment_method === "CREDIT" && !form.credit_customer_name.trim()) {
+      alert("Weka jina la mteja anayechukua kwa mkopo.");
+      return;
+    }
+
+    if (form.payment_method === "CREDIT") {
+      const paidNow = number(form.credit_paid_amount);
+      const saleTotal = qty * price;
+      if (paidNow < 0 || paidNow > saleTotal) {
+        alert("Kiasi alicholipa hakiwezi kuwa chini ya 0 au zaidi ya jumla ya sale.");
+        return;
+      }
+      if (!form.credit_due_date) {
+        alert("Chagua tarehe ya mwisho ya kulipa deni.");
+        return;
+      }
+    }
+
     setBusy(true);
 
     const payload = {
@@ -1977,6 +2670,27 @@ function SalesPage({ businessId, staff, onChanged }) {
       alert(error.message);
       setBusy(false);
       return;
+    }
+
+    if (form.payment_method === "CREDIT") {
+      const creditPayload = {
+        business_id: businessId,
+        sale_id: data.id,
+        customer_name: form.credit_customer_name.trim(),
+        customer_phone: form.credit_customer_phone.trim() || null,
+        original_amount: qty * price,
+        paid_amount: number(form.credit_paid_amount),
+        balance: Math.max(0, qty * price - number(form.credit_paid_amount)),
+        status: number(form.credit_paid_amount) >= qty * price ? "PAID" : number(form.credit_paid_amount) > 0 ? "PARTIAL" : "UNPAID",
+        due_date: form.credit_due_date || null,
+        product_id: type === "PRODUCT" && productMode === "existing" ? form.product_id : null,
+        service_id: type === "SERVICE" ? form.service_id : null,
+        created_by: staff?.id || null,
+      };
+      const { error: creditError } = await supabase.from("credit_transactions").insert(creditPayload);
+      if (creditError) {
+        alert(`Sale imehifadhiwa lakini deni halijaandikwa: ${creditError.message}`);
+      }
     }
 
     let itemName = form.manual_name;
@@ -2180,8 +2894,42 @@ function SalesPage({ businessId, staff, onChanged }) {
                 { value: "NMB", label: "NMB" },
                 { value: "BANK", label: "BANK" },
                 { value: "OTHER", label: "OTHER" },
+                { value: "CREDIT", label: "MKOPO / CREDIT" },
               ]}
             />
+
+            {form.payment_method === "CREDIT" && (
+              <>
+                <Field
+                  label="Jina la Mteja wa Mkopo"
+                  value={form.credit_customer_name}
+                  onChange={(v) => setForm({ ...form, credit_customer_name: v })}
+                  placeholder="Mfano: Juma"
+                  required
+                />
+                <Field
+                  label="Simu ya Mteja"
+                  value={form.credit_customer_phone}
+                  onChange={(v) => setForm({ ...form, credit_customer_phone: v })}
+                  placeholder="2557XXXXXXXX"
+                />
+                <Field
+                  label="Kiasi Alicholipa Sasa"
+                  type="number"
+                  value={form.credit_paid_amount}
+                  onChange={(v) => setForm({ ...form, credit_paid_amount: v })}
+                  min="0"
+                />
+                <Field
+                  label="Deni Litalipwa Tarehe"
+                  type="date"
+                  value={form.credit_due_date}
+                  onChange={(v) => setForm({ ...form, credit_due_date: v })}
+                  required
+                />
+                <div className="notice full">💳 Jumla: <strong>{money(total)}</strong> | Amelipa sasa: <strong>{money(form.credit_paid_amount)}</strong> | Salio: <strong>{money(Math.max(0, total - number(form.credit_paid_amount)))}</strong></div>
+              </>
+            )}
 
             <div className="sale-total full">
               <span>Total</span>
@@ -2935,11 +3683,15 @@ function DepositsPage({ businessId, staff, onChanged }) {
 
 function ReportsPage({ businessId, refresh }) {
   const [period, setPeriod] = useState("today");
-  const [data, setData] = useState({
-    sales: [],
-    expenses: [],
-    deposits: [],
-  });
+  const [data, setData] = useState({ sales: [], expenses: [], deposits: [], credits: [], attendance: [] });
+  const [showManual, setShowManual] = useState(false);
+  const [manualFrom, setManualFrom] = useState(() => new Date().toISOString().slice(0, 10));
+  const [manualTo, setManualTo] = useState(() => new Date().toISOString().slice(0, 10));
+  const [manualType, setManualType] = useState("all");
+  const [manualTitle, setManualTitle] = useState("Manual Business Report");
+  const [manualNote, setManualNote] = useState("");
+  const [manualData, setManualData] = useState(null);
+  const [manualBusy, setManualBusy] = useState(false);
 
   useEffect(() => {
     load();
@@ -2953,6 +3705,8 @@ function ReportsPage({ businessId, refresh }) {
       { data: sales },
       { data: expenses },
       { data: deposits },
+      { data: credits },
+      { data: attendance },
     ] = await Promise.all([
       supabase
         .from("sales")
@@ -2972,31 +3726,154 @@ function ReportsPage({ businessId, refresh }) {
         .eq("business_id", businessId)
         .gte("deposit_date", start)
         .order("deposit_date", { ascending: false }),
+      supabase
+        .from("credit_transactions")
+        .select("*")
+        .eq("business_id", businessId)
+        .gte("created_at", start)
+        .order("created_at", { ascending: false }),
+      supabase
+        .from("staff_attendance")
+        .select("*, staff(staff_name)")
+        .eq("business_id", businessId)
+        .gte("attendance_date", start.slice(0,10))
+        .order("check_in_at", { ascending: false }),
     ]);
 
     setData({
       sales: sales || [],
       expenses: expenses || [],
       deposits: deposits || [],
+      credits: credits || [],
+      attendance: attendance || [],
     });
   }
 
-  const salesTotal = data.sales.reduce(
-    (a, x) => a + number(x.sales_total),
-    0
-  );
-  const profit = data.sales.reduce(
-    (a, x) => a + number(x.profit),
-    0
-  );
-  const expensesTotal = data.expenses.reduce(
-    (a, x) => a + number(x.amount),
-    0
-  );
-  const depositsTotal = data.deposits.reduce(
-    (a, x) => a + number(x.amount),
-    0
-  );
+  async function generateManualReport() {
+    if (!businessId) return;
+    if (!manualFrom || !manualTo) {
+      alert("Chagua tarehe ya kuanzia na tarehe ya mwisho.");
+      return;
+    }
+    if (manualFrom > manualTo) {
+      alert("Tarehe ya kuanzia haiwezi kuwa baada ya tarehe ya mwisho.");
+      return;
+    }
+
+    setManualBusy(true);
+    const from = new Date(`${manualFrom}T00:00:00`).toISOString();
+    const to = new Date(`${manualTo}T23:59:59.999`).toISOString();
+
+    const requests = [];
+    if (manualType === "all" || manualType === "sales") {
+      requests.push(
+        supabase
+          .from("sales")
+          .select("*")
+          .eq("business_id", businessId)
+          .gte("sale_date", from)
+          .lte("sale_date", to)
+          .order("sale_date", { ascending: false })
+      );
+    } else {
+      requests.push(Promise.resolve({ data: [], error: null }));
+    }
+
+    if (manualType === "all" || manualType === "expenses") {
+      requests.push(
+        supabase
+          .from("expenses")
+          .select("*")
+          .eq("business_id", businessId)
+          .gte("expense_date", from)
+          .lte("expense_date", to)
+          .order("expense_date", { ascending: false })
+      );
+    } else {
+      requests.push(Promise.resolve({ data: [], error: null }));
+    }
+
+    if (manualType === "all" || manualType === "deposits") {
+      requests.push(
+        supabase
+          .from("deposits")
+          .select("*")
+          .eq("business_id", businessId)
+          .gte("deposit_date", from)
+          .lte("deposit_date", to)
+          .order("deposit_date", { ascending: false })
+      );
+    } else {
+      requests.push(Promise.resolve({ data: [], error: null }));
+    }
+
+    const [salesResult, expensesResult, depositsResult] = await Promise.all(requests);
+    const firstError = salesResult.error || expensesResult.error || depositsResult.error;
+
+    if (firstError) {
+      alert(firstError.message);
+      setManualBusy(false);
+      return;
+    }
+
+    const result = {
+      sales: salesResult.data || [],
+      expenses: expensesResult.data || [],
+      deposits: depositsResult.data || [],
+    };
+
+    setManualData(result);
+    setManualBusy(false);
+  }
+
+  function printReport(report = manualData, title = manualTitle) {
+    if (!report) {
+      alert("Kwanza tengeneza Manual Report.");
+      return;
+    }
+
+    const printWindow = window.open("", "_blank", "width=1000,height=800");
+    if (!printWindow) {
+      alert("Browser imezuia print window. Ruhusu pop-ups kisha ujaribu tena.");
+      return;
+    }
+
+    const salesTotal = report.sales.reduce((a, x) => a + number(x.sales_total), 0);
+    const profit = report.sales.reduce((a, x) => a + number(x.profit), 0);
+    const expensesTotal = report.expenses.reduce((a, x) => a + number(x.amount), 0);
+    const depositsTotal = report.deposits.reduce((a, x) => a + number(x.amount), 0);
+
+    const salesRows = report.sales.map((x) => `
+      <tr><td>${formatDate(x.sale_date)}</td><td>${x.sale_type || "-"}</td><td>${x.quantity || 0}</td><td>${money(x.sales_total)}</td><td>${money(x.profit)}</td><td>${x.payment_method || "-"}</td></tr>
+    `).join("");
+    const expenseRows = report.expenses.map((x) => `
+      <tr><td>${formatDate(x.expense_date)}</td><td>${x.expense_item || "-"}</td><td>${x.category || "-"}</td><td>${money(x.amount)}</td><td>${x.description || "-"}</td></tr>
+    `).join("");
+    const depositRows = report.deposits.map((x) => `
+      <tr><td>${formatDate(x.deposit_date)}</td><td>${money(x.amount)}</td><td>${x.method || "-"}</td><td>${x.depositor || "-"}</td><td>${x.reference_no || "-"}</td></tr>
+    `).join("");
+
+    printWindow.document.write(`<!doctype html><html><head><title>${title}</title><style>
+      body{font-family:Arial,sans-serif;color:#111;padding:30px;font-size:12px}h1{margin:0 0 6px}h2{margin-top:28px}.muted{color:#666}.summary{display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin:20px 0}.box{border:1px solid #ddd;padding:12px;border-radius:6px}.box b{display:block;font-size:16px;margin-top:5px}table{width:100%;border-collapse:collapse;margin-top:10px}th,td{border:1px solid #ddd;padding:7px;text-align:left}th{background:#f3f3f3}.note{margin:15px 0;padding:10px;border-left:4px solid #555;background:#f7f7f7}@media print{body{padding:0}.no-print{display:none}}
+    </style></head><body>
+      <h1>${title}</h1>
+      <div class="muted">Bless Stationery Management System</div>
+      <div class="muted">Kipindi: ${manualFrom} hadi ${manualTo} | Imetengenezwa: ${formatDate(new Date().toISOString())}</div>
+      ${manualNote ? `<div class="note">${manualNote}</div>` : ""}
+      <div class="summary"><div class="box">Sales<b>${money(salesTotal)}</b></div><div class="box">Profit<b>${money(profit)}</b></div><div class="box">Expenses<b>${money(expensesTotal)}</b></div><div class="box">Deposits<b>${money(depositsTotal)}</b></div></div>
+      ${report.sales.length ? `<h2>Sales</h2><table><thead><tr><th>Date</th><th>Type</th><th>Qty</th><th>Total</th><th>Profit</th><th>Payment</th></tr></thead><tbody>${salesRows}</tbody></table>` : ""}
+      ${report.expenses.length ? `<h2>Expenses</h2><table><thead><tr><th>Date</th><th>Item</th><th>Category</th><th>Amount</th><th>Description</th></tr></thead><tbody>${expenseRows}</tbody></table>` : ""}
+      ${report.deposits.length ? `<h2>Deposits</h2><table><thead><tr><th>Date</th><th>Amount</th><th>Method</th><th>Depositor</th><th>Reference</th></tr></thead><tbody>${depositRows}</tbody></table>` : ""}
+      <script>window.onload=function(){window.print();}</script>
+    </body></html>`);
+    printWindow.document.close();
+  }
+
+  const salesTotal = data.sales.reduce((a, x) => a + number(x.sales_total), 0);
+  const profit = data.sales.reduce((a, x) => a + number(x.profit), 0);
+  const expensesTotal = data.expenses.reduce((a, x) => a + number(x.amount), 0);
+  const depositsTotal = data.deposits.reduce((a, x) => a + number(x.amount), 0);
+  const creditBalance = data.credits.reduce((a, x) => a + number(x.balance), 0);
 
   return (
     <div>
@@ -3007,144 +3884,296 @@ function ReportsPage({ businessId, refresh }) {
 
       <div className="report-toolbar">
         <div className="report-tabs">
+          <button className={period === "today" ? "active" : ""} onClick={() => setPeriod("today")}>Leo</button>
+          <button className={period === "month" ? "active" : ""} onClick={() => setPeriod("month")}>Mwezi Huu</button>
+        </div>
+        <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+          <button className="secondary-btn" onClick={() => setShowManual(!showManual)}>
+            📝 Manual Report
+          </button>
+          <button className="secondary-btn" onClick={() => printReport(data, `Bless Stationery - ${period === "today" ? "Daily" : "Monthly"} Report`)}>
+            🖨 Print Report
+          </button>
           <button
-          className={period === "today" ? "active" : ""}
-          onClick={() => setPeriod("today")}
-        >
-          Leo
-        </button>
-          <button
-            className={period === "month" ? "active" : ""}
-            onClick={() => setPeriod("month")}
+            className="secondary-btn"
+            onClick={() => {
+              if (!data.sales.length && !data.expenses.length && !data.deposits.length) {
+                alert("Hakuna report data ya ku-export kwa kipindi hiki.");
+                return;
+              }
+              const workbook = XLSX.utils.book_new();
+              const salesRows = data.sales.map((x) => ({ Date: formatDate(x.sale_date), Type: x.sale_type, Quantity: x.quantity, "Unit Cost": x.unit_cost, "Selling Price": x.selling_price, Total: x.sales_total, Profit: x.profit, "Payment Method": x.payment_method }));
+              const expenseRows = data.expenses.map((x) => ({ Date: formatDate(x.expense_date), Item: x.expense_item, Category: x.category, Amount: x.amount, Description: x.description || "" }));
+              const depositRows = data.deposits.map((x) => ({ Date: formatDate(x.deposit_date), Amount: x.amount, Method: x.method, Depositor: x.depositor || "", Reference: x.reference_no || "", Note: x.note || "" }));
+              XLSX.utils.book_append_sheet(workbook, XLSX.utils.json_to_sheet(salesRows), "Sales");
+              XLSX.utils.book_append_sheet(workbook, XLSX.utils.json_to_sheet(expenseRows), "Expenses");
+              XLSX.utils.book_append_sheet(workbook, XLSX.utils.json_to_sheet(depositRows), "Deposits");
+              XLSX.writeFile(workbook, `Bless-Stationery-${period === "today" ? "Daily" : "Monthly"}-Report-${new Date().toISOString().slice(0, 10)}.xlsx`);
+            }}
           >
-            Mwezi Huu
+            ⬇ Export Excel
           </button>
         </div>
-        <button
-          className="secondary-btn"
-          onClick={() => {
-            if (!data.sales.length && !data.expenses.length && !data.deposits.length) {
-              alert("Hakuna report data ya ku-export kwa kipindi hiki.");
-              return;
-            }
-            const workbook = XLSX.utils.book_new();
-            const salesRows = data.sales.map((x) => ({
-              Date: formatDate(x.sale_date),
-              Type: x.sale_type,
-              Quantity: x.quantity,
-              "Unit Cost": x.unit_cost,
-              "Selling Price": x.selling_price,
-              Total: x.sales_total,
-              Profit: x.profit,
-              "Payment Method": x.payment_method,
-            }));
-            const expenseRows = data.expenses.map((x) => ({
-              Date: formatDate(x.expense_date),
-              Item: x.expense_item,
-              Category: x.category,
-              Amount: x.amount,
-              Description: x.description || "",
-            }));
-            const depositRows = data.deposits.map((x) => ({
-              Date: formatDate(x.deposit_date),
-              Amount: x.amount,
-              Method: x.method,
-              Depositor: x.depositor || "",
-              Reference: x.reference_no || "",
-              Note: x.note || "",
-            }));
-            XLSX.utils.book_append_sheet(workbook, XLSX.utils.json_to_sheet(salesRows), "Sales");
-            XLSX.utils.book_append_sheet(workbook, XLSX.utils.json_to_sheet(expenseRows), "Expenses");
-            XLSX.utils.book_append_sheet(workbook, XLSX.utils.json_to_sheet(depositRows), "Deposits");
-            XLSX.writeFile(workbook, `Bless-Stationery-${period === "today" ? "Daily" : "Monthly"}-Report-${new Date().toISOString().slice(0, 10)}.xlsx`);
-          }}
-        >
-          ⬇ Export Excel
-        </button>
       </div>
 
+      {showManual && (
+        <div className="panel" style={{ marginBottom: 18 }}>
+          <div className="panel-header">
+            <div>
+              <h3>Manual Report</h3>
+              <span>Chagua kipindi na aina ya taarifa unayotaka kutoa.</span>
+            </div>
+          </div>
+          <div className="form-grid">
+            <div><label>Tarehe Kuanzia</label><input type="date" value={manualFrom} onChange={(e) => setManualFrom(e.target.value)} /></div>
+            <div><label>Tarehe Mpaka</label><input type="date" value={manualTo} onChange={(e) => setManualTo(e.target.value)} /></div>
+            <div><label>Aina ya Report</label><select value={manualType} onChange={(e) => setManualType(e.target.value)}><option value="all">Zote</option><option value="sales">Sales</option><option value="expenses">Expenses</option><option value="deposits">Deposits</option></select></div>
+            <div><label>Kichwa cha Report</label><input type="text" value={manualTitle} onChange={(e) => setManualTitle(e.target.value)} placeholder="Mfano: Report ya Wiki" /></div>
+          </div>
+          <label>Maelezo / Note (optional)</label>
+          <textarea value={manualNote} onChange={(e) => setManualNote(e.target.value)} placeholder="Andika maelezo ya report..." rows="3" />
+          <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginTop: 12 }}>
+            <button className="primary-btn" onClick={generateManualReport} disabled={manualBusy}>{manualBusy ? "Inatengeneza..." : "Tengeneza Manual Report"}</button>
+            {manualData && <button className="secondary-btn" onClick={() => printReport(manualData, manualTitle || "Manual Business Report")}>🖨 Print Manual Report</button>}
+          </div>
+
+          {manualData && (
+            <div style={{ marginTop: 18 }}>
+              <div className="stats-grid">
+                <StatCard title="Sales" value={money(manualData.sales.reduce((a, x) => a + number(x.sales_total), 0))} icon="💰" tone="blue" />
+                <StatCard title="Profit" value={money(manualData.sales.reduce((a, x) => a + number(x.profit), 0))} icon="📈" tone="green" />
+                <StatCard title="Expenses" value={money(manualData.expenses.reduce((a, x) => a + number(x.amount), 0))} icon="💸" tone="red" />
+                <StatCard title="Deposits" value={money(manualData.deposits.reduce((a, x) => a + number(x.amount), 0))} icon="🏦" tone="purple" />
+              </div>
+              <p className="muted">Report imetengenezwa kwa tarehe {manualFrom} hadi {manualTo}.</p>
+            </div>
+          )}
+        </div>
+      )}
+
       <div className="stats-grid">
-        <StatCard
-          title="Total Sales"
-          value={money(salesTotal)}
-          icon="💰"
-          tone="blue"
-        />
-        <StatCard
-          title="Gross Profit"
-          value={money(profit)}
-          icon="📈"
-          tone="green"
-        />
-        <StatCard
-          title="Expenses"
-          value={money(expensesTotal)}
-          icon="💸"
-          tone="red"
-        />
-        <StatCard
-          title="Deposits"
-          value={money(depositsTotal)}
-          icon="🏦"
-          tone="purple"
-        />
+        <StatCard title="Total Sales" value={money(salesTotal)} icon="💰" tone="blue" />
+        <StatCard title="Gross Profit" value={money(profit)} icon="📈" tone="green" />
+        <StatCard title="Expenses" value={money(expensesTotal)} icon="💸" tone="red" />
+        <StatCard title="Deposits" value={money(depositsTotal)} icon="🏦" tone="purple" />
       </div>
 
       <div className="dashboard-grid">
         <div className="panel">
-          <div className="panel-header">
-            <div>
-              <h3>Sales Summary</h3>
-              <span>{data.sales.length} transactions</span>
-            </div>
-          </div>
-
+          <div className="panel-header"><div><h3>Sales Summary</h3><span>{data.sales.length} transactions</span></div></div>
           <div className="report-list">
             {data.sales.slice(0, 20).map((x) => (
-              <div className="report-row" key={x.id}>
-                <div>
-                  <strong>{x.sale_type}</strong>
-                  <span>{formatDate(x.sale_date)}</span>
-                </div>
-                <strong>{money(x.sales_total)}</strong>
-              </div>
+              <div className="report-row" key={x.id}><div><strong>{x.sale_type}</strong><span>{formatDate(x.sale_date)}</span></div><strong>{money(x.sales_total)}</strong></div>
             ))}
           </div>
         </div>
-
         <div className="panel">
-          <div className="panel-header">
-            <div>
-              <h3>Expenses Summary</h3>
-              <span>{data.expenses.length} records</span>
-            </div>
-          </div>
-
+          <div className="panel-header"><div><h3>Expenses Summary</h3><span>{data.expenses.length} records</span></div></div>
           <div className="report-list">
             {data.expenses.slice(0, 20).map((x) => (
-              <div className="report-row" key={x.id}>
-                <div>
-                  <strong>{x.expense_item}</strong>
-                  <span>{x.category}</span>
-                </div>
-                <strong>{money(x.amount)}</strong>
-              </div>
+              <div className="report-row" key={x.id}><div><strong>{x.expense_item}</strong><span>{x.category}</span></div><strong>{money(x.amount)}</strong></div>
             ))}
           </div>
         </div>
+      </div>
+
+      <div className="stats-grid">
+        <StatCard title="Credit Sales" value={money(data.credits.reduce((a,x)=>a+number(x.original_amount),0))} icon="💳" tone="orange" />
+        <StatCard title="Outstanding Debt" value={money(creditBalance)} icon="📒" tone="red" />
+        <StatCard title="Staff Present" value={data.attendance.length} icon="👥" tone="green" />
+        <StatCard title="Staff Absent" value={data.attendance.length} icon="◷" tone="purple" />
+      </div>
+
+      <div className="panel">
+        <div className="panel-header"><div><h3>Staff Attendance — Daily Report</h3><span>Muda wa kuingia/kutoka unachukuliwa automatically.</span></div></div>
+        <div className="table-wrap"><table><thead><tr><th>Staff</th><th>Kuingia</th><th>Kutoka</th><th>Late</th><th>Working Hours</th><th>Status</th></tr></thead><tbody>
+        {data.attendance.map(a=>{const cin=a.check_in_at?new Date(a.check_in_at):null;const cout=a.check_out_at?new Date(a.check_out_at):null;const late=cin?Math.max(0,Math.round((cin-(new Date(cin).setHours(8,30,0,0)))/60000)):0;const mins=cin&&cout?Math.max(0,Math.round((cout-cin)/60000)):0;return <tr key={a.id}><td><strong>{a.staff?.staff_name||"-"}</strong></td><td>{cin?cin.toLocaleTimeString("en-TZ",{hour:"2-digit",minute:"2-digit",hour12:false}):"-"}</td><td>{cout?cout.toLocaleTimeString("en-TZ",{hour:"2-digit",minute:"2-digit",hour12:false}):"-"}</td><td>{late} min</td><td>{cin&&cout?`${Math.floor(mins/60)}h ${mins%60}m`:"-"}</td><td>{cout?"PRESENT":"IN WORK"}</td></tr>})}
+        {!data.attendance.length&&<tr><td colSpan="6">Hakuna attendance ya siku hii.</td></tr>}
+        </tbody></table></div>
+      </div>
+
+      <div className="panel">
+        <div className="panel-header"><div><h3>Madeni / Credit</h3><span>Wateja waliobaki na salio la deni.</span></div></div>
+        <div className="table-wrap"><table><thead><tr><th>Mteja</th><th>Deni</th><th>Amelipa</th><th>Salio</th><th>Status</th></tr></thead><tbody>
+        {data.credits.map(c=><tr key={c.id}><td><strong>{c.customer_name}</strong></td><td>{money(c.original_amount)}</td><td>{money(c.paid_amount)}</td><td>{money(c.balance)}</td><td>{c.status}</td></tr>)}
+        {!data.credits.length&&<tr><td colSpan="5">Hakuna madeni kwenye kipindi hiki.</td></tr>}
+        </tbody></table></div>
       </div>
 
       <div className="panel summary-panel">
         <h3>Net Position</h3>
-        <div className="net-number">
-          {money(salesTotal - expensesTotal)}
-        </div>
-        <p>
-          Hii ni Sales minus Expenses kwa kipindi kilichochaguliwa.
-        </p>
+        <div className="net-number">{money(salesTotal - expensesTotal)}</div>
+        <p>Hii ni Sales minus Expenses kwa kipindi kilichochaguliwa.</p>
       </div>
     </div>
   );
+}
+
+
+function CreditPage({ businessId, staff, refresh }) {
+  const [credits, setCredits] = useState([]);
+  const [products, setProducts] = useState([]);
+  const [services, setServices] = useState([]);
+  const [form, setForm] = useState({
+    customer_name: "",
+    customer_phone: "",
+    product_id: "",
+    service_id: "",
+    item_type: "PRODUCT",
+    amount: "",
+    paid_amount: "0",
+    due_date: "",
+    note: "",
+  });
+  const [paying, setPaying] = useState(null);
+  const [paymentAmount, setPaymentAmount] = useState("");
+  const [search, setSearch] = useState("");
+  const [busy, setBusy] = useState(false);
+
+  async function load() {
+    if (!businessId) return;
+    const [{ data: c, error }, { data: p }, { data: sv }] = await Promise.all([
+      supabase.from("credit_transactions").select("*, sales(sale_date, sale_type, quantity, selling_price, products(product_name), services(service_name))").eq("business_id", businessId).order("due_date", { ascending: true }),
+      supabase.from("products").select("*").eq("business_id", businessId).eq("active", true).order("product_name"),
+      supabase.from("services").select("*").eq("business_id", businessId).eq("active", true).order("service_name"),
+    ]);
+    if (error) { alert(error.message); return; }
+    setCredits(c || []); setProducts(p || []); setServices(sv || []);
+  }
+  useEffect(() => { load(); }, [businessId, refresh]);
+
+  async function addDebt(e) {
+    e.preventDefault();
+    const original = number(form.amount);
+    const paid = number(form.paid_amount);
+    if (!form.customer_name.trim() || original <= 0) { alert("Weka jina la mteja na kiasi sahihi."); return; }
+    if (paid < 0 || paid > original) { alert("Kiasi alicholipa hakiwezi kuzidi deni."); return; }
+    if (!form.due_date) { alert("Chagua tarehe ya mwisho ya kulipa."); return; }
+    setBusy(true);
+    const balance = Math.max(0, original - paid);
+    const { error } = await supabase.from("credit_transactions").insert({
+      business_id: businessId,
+      customer_name: form.customer_name.trim(),
+      customer_phone: form.customer_phone.trim() || null,
+      product_id: form.item_type === "PRODUCT" ? (form.product_id || null) : null,
+      service_id: form.item_type === "SERVICE" ? (form.service_id || null) : null,
+      original_amount: original,
+      paid_amount: paid,
+      balance,
+      status: balance <= 0 ? "PAID" : paid > 0 ? "PARTIAL" : "UNPAID",
+      due_date: form.due_date,
+      note: form.note.trim() || null,
+      created_by: staff?.id || null,
+    });
+    if (error) alert(error.message);
+    else {
+      setForm({ customer_name:"", customer_phone:"", product_id:"", service_id:"", item_type:"PRODUCT", amount:"", paid_amount:"0", due_date:"", note:"" });
+      await load();
+    }
+    setBusy(false);
+  }
+
+  async function payDebt(row) {
+    const pay = number(paymentAmount);
+    if (pay <= 0 || pay > number(row.balance)) { alert("Kiasi cha malipo si sahihi."); return; }
+    const paid = number(row.paid_amount) + pay;
+    const balance = Math.max(0, number(row.original_amount) - paid);
+    const { error } = await supabase.from("credit_transactions").update({
+      paid_amount: paid, balance, status: balance <= 0 ? "PAID" : "PARTIAL", last_payment_at: new Date().toISOString()
+    }).eq("id", row.id).eq("business_id", businessId);
+    if (error) alert(error.message); else { setPaying(null); setPaymentAmount(""); await load(); }
+  }
+
+  function itemName(x) {
+    return x.sales?.products?.product_name || x.sales?.services?.service_name || products.find(p=>p.id===x.product_id)?.product_name || services.find(s=>s.id===x.service_id)?.service_name || "-";
+  }
+  function sendReminder(row) {
+    if (!row.customer_phone) { alert("Mteja hana namba ya simu."); return; }
+    const phone = row.customer_phone.replace(/[^0-9]/g, "");
+    const msg = `Habari ${row.customer_name}, tunakukumbusha kuwa una deni la TZS ${money(row.balance)} katika Bless Stationery. Tarehe ya mwisho ya malipo ni ${row.due_date || "leo"}. Tafadhali lipa kwa wakati. Asante.`;
+    window.open(`https://wa.me/${phone}?text=${encodeURIComponent(msg)}`, "_blank");
+  }
+
+  const filtered = credits.filter(x => `${x.customer_name} ${x.customer_phone || ""}`.toLowerCase().includes(search.toLowerCase()));
+  const totalDebt = filtered.reduce((a,x)=>a+number(x.balance),0);
+  const totalOriginal = filtered.reduce((a,x)=>a+number(x.original_amount),0);
+  const totalPaid = filtered.reduce((a,x)=>a+number(x.paid_amount),0);
+
+  return <div>
+    <PageTitle title="Madeni / Credit" subtitle="Simamia bidhaa na huduma zilizochukuliwa kwa mkopo." />
+    <div className="stats-grid">
+      <StatCard title="Madeni Yote" value={money(totalDebt)} icon="💳" tone="red" />
+      <StatCard title="Jumla ya Mikopo" value={money(totalOriginal)} icon="📒" tone="blue" />
+      <StatCard title="Yaliyolipwa" value={money(totalPaid)} icon="✓" tone="green" />
+      <StatCard title="Wadaiwa" value={filtered.filter(x=>number(x.balance)>0).length} icon="👥" tone="orange" />
+    </div>
+    <div className="panel">
+      <div className="panel-header"><div><h3>Ongeza Deni</h3><span>Weka mteja, product/service, kiasi alicholipa na tarehe ya mwisho.</span></div></div>
+      <form onSubmit={addDebt} className="form-grid">
+        <Field label="Jina la Mteja" value={form.customer_name} onChange={v=>setForm({...form,customer_name:v})} required />
+        <Field label="Simu ya Mteja" value={form.customer_phone} onChange={v=>setForm({...form,customer_phone:v})} placeholder="2557XXXXXXXX" />
+        <SelectField label="Aina" value={form.item_type} onChange={v=>setForm({...form,item_type:v,product_id:"",service_id:""})} options={[{value:"PRODUCT",label:"PRODUCT"},{value:"SERVICE",label:"SERVICE"}]} />
+        {form.item_type === "PRODUCT" ? <SelectField label="Product" value={form.product_id} onChange={v=>setForm({...form,product_id:v})} options={products.map(p=>({value:p.id,label:p.product_name}))} /> : <SelectField label="Service" value={form.service_id} onChange={v=>setForm({...form,service_id:v})} options={services.map(s=>({value:s.id,label:s.service_name}))} />}
+        <Field label="Kiasi Jumla" type="number" value={form.amount} onChange={v=>setForm({...form,amount:v})} required />
+        <Field label="Kiasi Alicholipa" type="number" value={form.paid_amount} onChange={v=>setForm({...form,paid_amount:v})} />
+        <Field label="Deni Litalipwa Tarehe" type="date" value={form.due_date} onChange={v=>setForm({...form,due_date:v})} required />
+        <Field label="Maelezo" value={form.note} onChange={v=>setForm({...form,note:v})} />
+        <div className="notice full">Salio: <strong>{money(Math.max(0, number(form.amount)-number(form.paid_amount)))}</strong></div>
+        <div className="form-actions full"><button className="primary-btn" disabled={busy}>{busy ? "Inahifadhi..." : "+ Weka Deni"}</button></div>
+      </form>
+    </div>
+    <div className="panel">
+      <div className="toolbar"><input className="search-input" value={search} onChange={e=>setSearch(e.target.value)} placeholder="Tafuta mteja..." /></div>
+      <div className="table-wrap"><table><thead><tr><th>Mteja</th><th>Product/Service</th><th>Deni</th><th>Amelipa</th><th>Salio</th><th>Due Date</th><th>Status</th><th>Action</th></tr></thead><tbody>
+        {filtered.map(x=><tr key={x.id}><td><strong>{x.customer_name}</strong><br/><small>{x.customer_phone || "-"}</small></td><td>{itemName(x)}</td><td>{money(x.original_amount)}</td><td>{money(x.paid_amount)}</td><td><strong>{money(x.balance)}</strong></td><td>{x.due_date || "-"}</td><td>{x.status}</td><td>{number(x.balance)>0 && <div style={{display:"flex",gap:6,flexWrap:"wrap"}}>{paying===x.id ? <><input type="number" value={paymentAmount} onChange={e=>setPaymentAmount(e.target.value)} placeholder="Kiasi" /><button className="primary-btn" onClick={()=>payDebt(x)}>Lipa</button><button className="secondary-btn" onClick={()=>setPaying(null)}>X</button></> : <button className="secondary-btn" onClick={()=>setPaying(x.id)}>+ Malipo</button>}<button className="secondary-btn" onClick={()=>sendReminder(x)}>📲 Kumbusha</button></div>}</td></tr>)}
+        {!filtered.length && <tr><td colSpan="8">Hakuna madeni yaliyopatikana.</td></tr>}
+      </tbody></table></div>
+    </div>
+  </div>;
+}
+
+function AttendancePage({ businessId, staff, refresh }) {
+  const [staffRows, setStaffRows] = useState([]);
+  const [attendance, setAttendance] = useState([]);
+  const [todayRecord, setTodayRecord] = useState(null);
+  const [busy, setBusy] = useState(false);
+  const [date, setDate] = useState(new Date().toISOString().slice(0,10));
+  
+  async function load() {
+    if (!businessId) return;
+    const [{data:s},{data:a,error}] = await Promise.all([
+      supabase.from("staff").select("*").eq("business_id",businessId).eq("active",true).order("staff_name"),
+      supabase.from("staff_attendance").select("*, staff(staff_name,role)").eq("business_id",businessId).eq("attendance_date",date).order("check_in_at",{ascending:true})
+    ]);
+    if(error){alert(error.message);return;}
+    setStaffRows(s||[]); setAttendance(a||[]);
+    setTodayRecord((a||[]).find(x=>x.staff_id===staff?.id)||null);
+  }
+  useEffect(()=>{load()},[businessId,date,refresh,staff?.id]);
+
+  async function checkIn(){
+    if(!staff?.id){alert("Staff profile haijapatikana.");return;}
+    if(todayRecord){alert("Tayari ume-sign in leo.");return;}
+    setBusy(true);
+    const {error}=await supabase.from("staff_attendance").insert({business_id:businessId,staff_id:staff.id,attendance_date:new Date().toLocaleDateString("en-CA",{timeZone:"Africa/Dar_es_Salaam"}),status:"PRESENT"});
+    if(error) alert(error.message); else await load(); setBusy(false);
+  }
+  async function checkOut(){
+    if(!todayRecord){alert("Huja-sign in leo.");return;}
+    if(todayRecord.check_out_at){alert("Tayari ume-sign out leo.");return;}
+    setBusy(true);
+    const {error}=await supabase.from("staff_attendance").update({check_out_at:new Date().toISOString()}).eq("id",todayRecord.id).eq("business_id",businessId);
+    if(error) alert(error.message); else await load(); setBusy(false);
+  }
+  function localTime(v){return v?new Date(v).toLocaleTimeString("en-TZ",{hour:"2-digit",minute:"2-digit",hour12:false}):"-"}
+  function minutesLate(v){if(!v)return 0;const d=new Date(v);const scheduled=new Date(d);scheduled.setHours(8,30,0,0);return Math.max(0,Math.round((d-scheduled)/60000))}
+  function worked(v1,v2){if(!v1||!v2)return "-";return `${Math.floor((new Date(v2)-new Date(v1))/3600000)}h ${Math.floor(((new Date(v2)-new Date(v1))%3600000)/60000)}m`}
+  return <div>
+    <PageTitle title="Staff Attendance" subtitle="Staff wana-sign in/out; muda unachukuliwa automatically na mfumo." />
+    <div className="stats-grid"><StatCard title="Kuingia" value="08:30" icon="🌅" tone="blue" /><StatCard title="Kutoka" value="21:30" icon="🌙" tone="purple" /><StatCard title="Present" value={attendance.length} icon="✓" tone="green" /><StatCard title="Absent" value={attendance.length} icon="◷" tone="red" /></div>
+    {staff?.active && <div className="panel"><div className="panel-header"><div><h3>{staff.staff_name} — Leo</h3><span>System time ndiyo unaotumika; staff haandiki muda.</span></div><div style={{display:"flex",gap:8}}><button className="primary-btn" disabled={busy||!!todayRecord} onClick={checkIn}>✓ SIGN IN</button><button className="secondary-btn" disabled={busy||!todayRecord||!!todayRecord.check_out_at} onClick={checkOut}>↪ SIGN OUT</button></div></div>{todayRecord&&<div className="notice">Kuingia: <strong>{localTime(todayRecord.check_in_at)}</strong> · Kutoka: <strong>{localTime(todayRecord.check_out_at)}</strong> · Late: <strong>{minutesLate(todayRecord.check_in_at)} min</strong></div>}</div>}
+    <div className="panel"><div className="toolbar"><input type="date" value={date} onChange={e=>setDate(e.target.value)} /></div><div className="table-wrap"><table><thead><tr><th>Staff</th><th>Kuingia</th><th>Kutoka</th><th>Late</th><th>Working Hours</th><th>Status</th></tr></thead><tbody>{staffRows.map(s=>{const a=attendance.find(x=>x.staff_id===s.id);return <tr key={s.id}><td><strong>{s.staff_name}</strong></td><td>{localTime(a?.check_in_at)}</td><td>{localTime(a?.check_out_at)}</td><td>{a?`${minutesLate(a.check_in_at)} min`:"-"}</td><td>{worked(a?.check_in_at,a?.check_out_at)}</td><td>{a?(a.check_out_at?"PRESENT":"IN WORK"):"ABSENT"}</td></tr>})}</tbody></table></div></div>
+  </div>;
 }
 
 function StaffPage({ businessId, refresh }) {
@@ -4852,7 +5881,138 @@ td strong {
   color: #188c50;
 }
 
+
+
+.saas-toolbar {
+  display: grid;
+  grid-template-columns: minmax(240px, 1fr) 180px 190px auto;
+  gap: 10px;
+  margin-bottom: 18px;
+}
+
+.saas-toolbar input,
+.saas-toolbar select {
+  width: 100%;
+  border: 1px solid #dbe3ef;
+  border-radius: 10px;
+  padding: 11px 12px;
+  background: #fff;
+  font: inherit;
+}
+
+.saas-table-wrap {
+  width: 100%;
+  overflow-x: auto;
+}
+
+.saas-table {
+  width: 100%;
+  border-collapse: collapse;
+  min-width: 850px;
+}
+
+.saas-table th,
+.saas-table td {
+  padding: 13px 12px;
+  text-align: left;
+  border-bottom: 1px solid #edf1f7;
+  white-space: nowrap;
+}
+
+.saas-table th {
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: .04em;
+  color: #718096;
+  background: #f8fafc;
+}
+
+.saas-table tbody tr {
+  cursor: pointer;
+  transition: background .15s ease;
+}
+
+.saas-table tbody tr:hover {
+  background: #f8fbff;
+}
+
+.saas-status {
+  display: inline-flex;
+  align-items: center;
+  border-radius: 999px;
+  padding: 5px 9px;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: .02em;
+}
+
+.saas-status.active {
+  background: #dcfce7;
+  color: #166534;
+}
+
+.saas-status.trialing {
+  background: #ede9fe;
+  color: #6d28d9;
+}
+
+.saas-status.pending-payment {
+  background: #fff7ed;
+  color: #c2410c;
+}
+
+.saas-status.expired,
+.saas-status.cancelled {
+  background: #fee2e2;
+  color: #b91c1c;
+}
+
+.saas-detail-panel {
+  margin-top: 18px;
+}
+
+.saas-detail-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.saas-detail-grid > div {
+  padding: 13px;
+  border: 1px solid #edf1f7;
+  border-radius: 10px;
+  background: #fbfcfe;
+}
+
+.saas-detail-grid span {
+  display: block;
+  color: #718096;
+  font-size: 12px;
+  margin-bottom: 5px;
+}
+
+.saas-detail-grid strong {
+  display: block;
+  word-break: break-word;
+}
+
+.saas-subtitle {
+  margin: 22px 0 10px;
+}
+
+.platform-nav-title {
+  margin-top: 12px;
+  color: #7c3aed;
+}
+
 @media (max-width: 900px) {
+  .saas-toolbar {
+    grid-template-columns: 1fr 1fr;
+  }
+
+  .saas-detail-grid {
+    grid-template-columns: 1fr 1fr;
+  }
   .staff-directory-card {
     grid-template-columns: 1fr;
   }
@@ -4982,6 +6142,13 @@ td strong {
 }
 
 @media (max-width: 600px) {
+  .saas-toolbar {
+    grid-template-columns: 1fr;
+  }
+
+  .saas-detail-grid {
+    grid-template-columns: 1fr;
+  }
   .stats-grid,
   .form-grid,
   .service-grid,
@@ -5029,6 +6196,30 @@ td strong {
   .report-tabs button {
     white-space: nowrap;
   }
+}
+
+.subscription-gate {
+  max-width: 620px;
+  margin: 60px auto;
+  text-align: center;
+  padding: 42px 28px;
+}
+
+.subscription-gate-icon {
+  font-size: 46px;
+  margin-bottom: 12px;
+}
+
+.subscription-gate h2 {
+  margin: 0 0 10px;
+}
+
+.subscription-gate p {
+  line-height: 1.6;
+}
+
+.subscription-gate-actions {
+  margin-top: 24px;
 }
 `;
 
