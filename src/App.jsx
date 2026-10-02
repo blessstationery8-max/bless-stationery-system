@@ -13,6 +13,27 @@ function number(value) {
   return Number(value || 0);
 }
 
+function positiveNumber(value) {
+  return Math.max(0, number(value));
+}
+
+function escapeHtml(value) {
+  return String(value ?? "")
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#039;");
+}
+
+function todayDateInput() {
+  return new Date().toISOString().slice(0, 10);
+}
+
+function normalizePhone(value) {
+  return String(value || "").replace(/[^0-9+]/g, "");
+}
+
 function todayStart() {
   const d = new Date();
   d.setHours(0, 0, 0, 0);
@@ -804,6 +825,68 @@ function System({ user }) {
   const [subscriptionAccess, setSubscriptionAccess] = useState(null);
   const [subscriptionLoading, setSubscriptionLoading] = useState(true);
   const [refresh, setRefresh] = useState(0);
+  const [theme, setTheme] = useState(() => localStorage.getItem(`bless_theme_${user.id}`) || "ocean");
+  const [density, setDensity] = useState(() => localStorage.getItem(`bless_density_${user.id}`) || "comfortable");
+  const [showWelcome, setShowWelcome] = useState(() => {
+    try {
+      return sessionStorage.getItem(`bless_welcome_${user.id}`) !== "seen";
+    } catch {
+      return true;
+    }
+  });
+  const [showCommand, setShowCommand] = useState(false);
+  const [pulse, setPulse] = useState({ sales: 0, expenses: 0, products: 0, debts: 0 });
+  const businessId = staff?.business_id || null;
+
+  useEffect(() => {
+    if (!businessId) return;
+    let cancelled = false;
+    async function loadPulse() {
+      const [salesRes, expenseRes, productRes, debtRes] = await Promise.all([
+        supabase.from("sales").select("sales_total").eq("business_id", businessId),
+        supabase.from("expenses").select("amount").eq("business_id", businessId),
+        supabase.from("products").select("id").eq("business_id", businessId).eq("active", true),
+        supabase.from("credit_transactions").select("balance").eq("business_id", businessId).gt("balance", 0),
+      ]);
+      if (cancelled) return;
+      setPulse({
+        sales: (salesRes.data || []).reduce((a, x) => a + number(x.sales_total), 0),
+        expenses: (expenseRes.data || []).reduce((a, x) => a + number(x.amount), 0),
+        products: (productRes.data || []).length,
+        debts: (debtRes.data || []).reduce((a, x) => a + number(x.balance), 0),
+      });
+    }
+    loadPulse();
+    return () => { cancelled = true; };
+  }, [businessId, refresh]);
+
+  useEffect(() => {
+    const onKey = (e) => {
+      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "k") {
+        e.preventDefault();
+        setShowCommand((v) => !v);
+      }
+      if (e.key === "Escape") {
+        setShowCommand(false);
+        setShowWelcome(false);
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, []);
+
+  function closeWelcome() {
+    setShowWelcome(false);
+    try { sessionStorage.setItem(`bless_welcome_${user.id}`, "seen"); } catch {}
+  }
+
+  useEffect(() => {
+    localStorage.setItem(`bless_theme_${user.id}`, theme);
+  }, [theme, user.id]);
+
+  useEffect(() => {
+    localStorage.setItem(`bless_density_${user.id}`, density);
+  }, [density, user.id]);
 
   useEffect(() => {
     loadPlatformAdmin();
@@ -884,10 +967,8 @@ function System({ user }) {
     await supabase.auth.signOut();
   }
 
-  const businessId = staff?.business_id || null;
-
   const pages = {
-    dashboard: <Dashboard businessId={businessId} go={go} refresh={refresh} />,
+    dashboard: <Dashboard businessId={businessId} business={business} go={go} refresh={refresh} />,
     products: (
       <ProductsPage
         businessId={businessId}
@@ -909,10 +990,12 @@ function System({ user }) {
         onChanged={() => setRefresh((x) => x + 1)}
       />
     ),
+    inventoryHistory: <InventoryHistoryPage businessId={businessId} refresh={refresh} />,
     sales: (
       <SalesPage
         businessId={businessId}
         staff={staff}
+        business={business}
         onChanged={() => setRefresh((x) => x + 1)}
       />
     ),
@@ -934,6 +1017,18 @@ function System({ user }) {
     staff: <StaffPage businessId={businessId} refresh={refresh} />,
     credits: <CreditPage businessId={businessId} staff={staff} refresh={refresh} />,
     attendance: <AttendancePage businessId={businessId} staff={staff} refresh={refresh} />,
+    settings: (
+      <BusinessSettingsPage
+        businessId={businessId}
+        business={business}
+        user={user}
+        theme={theme}
+        setTheme={setTheme}
+        density={density}
+        setDensity={setDensity}
+        onChanged={() => { setRefresh((x) => x + 1); loadStaff(); }}
+      />
+    ),
     saasOverview: <SaaSAdminPage section="overview" refresh={refresh} />,
     saasCustomers: <SaaSAdminPage section="customers" refresh={refresh} />,
     saasSubscriptions: <SaaSAdminPage section="subscriptions" refresh={refresh} />,
@@ -941,7 +1036,55 @@ function System({ user }) {
   };
 
   return (
-    <div className="app-shell">
+    <div className={`app-shell theme-${theme} density-${density}`} data-theme={theme} data-density={density}>
+      {showWelcome && (
+        <div className="bless-welcome-backdrop" onClick={closeWelcome}>
+          <div className="bless-welcome-card" onClick={(e) => e.stopPropagation()}>
+            <div className="bless-welcome-orbit one" />
+            <div className="bless-welcome-orbit two" />
+            <div className="bless-welcome-logo">B</div>
+            <div className="bless-welcome-kicker">BLESS BUSINESS OS</div>
+            <h1>Karibu tena, {staff?.staff_name?.split(" ")[0] || "Boss"}.</h1>
+            <p className="bless-welcome-sub">{business?.business_name || "Biashara yako"} iko tayari. Mfumo uko hewani.</p>
+            <div className="bless-pulse-grid">
+              <div><span>SALES</span><strong>{money(pulse.sales)}</strong></div>
+              <div><span>EXPENSES</span><strong>{money(pulse.expenses)}</strong></div>
+              <div><span>PRODUCTS</span><strong>{pulse.products}</strong></div>
+              <div><span>CREDIT</span><strong>{money(pulse.debts)}</strong></div>
+            </div>
+            <button className="bless-enter-btn" onClick={closeWelcome}>ENTER SYSTEM <span>→</span></button>
+            <small>Tip: bonyeza <kbd>Ctrl</kbd> + <kbd>K</kbd> kufungua Quick Command.</small>
+          </div>
+        </div>
+      )}
+
+      {showCommand && (
+        <div className="bless-command-backdrop" onClick={() => setShowCommand(false)}>
+          <div className="bless-command" onClick={(e) => e.stopPropagation()}>
+            <div className="bless-command-head">
+              <div><span>QUICK COMMAND</span><h3>Unataka kwenda wapi?</h3></div>
+              <button onClick={() => setShowCommand(false)}>×</button>
+            </div>
+            <div className="bless-command-search">⌘ <span>Chagua action hapa chini</span><kbd>ESC</kbd></div>
+            <div className="bless-command-grid">
+              {[
+                ["sales","🛒","New Sale"],["stock","📦","Stock In"],["inventoryHistory","↕","Inventory History"],
+                ["products","▣","Products"],["services","⚙","Services"],["reports","▤","Reports"],
+                ["credits","💳","Madeni"],["attendance","🕐","Attendance"],["settings","⚙","Settings"],
+              ].map(([target, icon, label]) => (
+                <button key={target} onClick={() => { setShowCommand(false); go(target); }}>
+                  <span>{icon}</span><strong>{label}</strong><em>→</em>
+                </button>
+              ))}
+            </div>
+          </div>
+        </div>
+      )}
+
+      <button className="bless-floating-command" onClick={() => setShowCommand(true)} title="Quick Command">
+        <span>⌘</span><small>Ctrl K</small>
+      </button>
+
       <aside className={`sidebar ${mobileMenu ? "open" : ""}`}>
         <div className="sidebar-brand">
           <div className="small-logo">B</div>
@@ -983,6 +1126,13 @@ function System({ user }) {
             icon="📦"
             text="Stock In"
             onClick={() => go("stock")}
+          />
+
+          <NavButton
+            active={page === "inventoryHistory"}
+            icon="↕"
+            text="Inventory History"
+            onClick={() => go("inventoryHistory")}
           />
 
           <NavButton
@@ -1043,6 +1193,13 @@ function System({ user }) {
             icon="🕐"
             text="Staff Attendance"
             onClick={() => go("attendance")}
+          />
+
+          <NavButton
+            active={page === "settings"}
+            icon="⚙"
+            text="Business Settings"
+            onClick={() => go("settings")}
           />
 
           {isPlatformAdmin && (
@@ -1109,6 +1266,8 @@ function System({ user }) {
                 ? "Sales Entry"
                 : page === "stock"
                 ? "Stock In"
+                : page === "inventoryHistory"
+                ? "Inventory History"
                 : page === "products"
                 ? "Products"
                 : page === "services"
@@ -1125,6 +1284,8 @@ function System({ user }) {
                 ? "Madeni / Credit"
                 : page === "attendance"
                 ? "Staff Attendance"
+                : page === "settings"
+                ? "Business Settings"
                 : page === "saasOverview"
                 ? "SaaS Overview"
                 : page === "saasCustomers"
@@ -1670,7 +1831,7 @@ function SaaSAdminPage({ section = "overview", refresh }) {
   );
 }
 
-function Dashboard({ businessId, go, refresh }) {
+function Dashboard({ businessId, business, go, refresh }) {
   const [stats, setStats] = useState({
     todaySales: 0,
     todayProfit: 0,
@@ -1682,6 +1843,7 @@ function Dashboard({ businessId, go, refresh }) {
     stockValue: 0,
   });
   const [lowProducts, setLowProducts] = useState([]);
+  const [allLowProducts, setAllLowProducts] = useState([]);
   const [recentSales, setRecentSales] = useState([]);
   const [loading, setLoading] = useState(true);
 
@@ -1761,9 +1923,118 @@ function Dashboard({ businessId, go, refresh }) {
       ),
     });
 
+    setAllLowProducts(low);
     setLowProducts(low.slice(0, 8));
     setRecentSales(s.slice(0, 8));
     setLoading(false);
+  }
+
+  function printLowStockPurchaseList() {
+    if (!allLowProducts.length) {
+      alert("Hakuna bidhaa yenye low stock kwa sasa.");
+      return;
+    }
+
+    const rows = allLowProducts.map((x) => {
+      const current = Math.max(number(x.currentStock), 0);
+      const reorder = Math.max(number(x.reorder_level), 0);
+      const qtyToBuy = Math.max(reorder - current, 0);
+      const unitCost = Math.max(number(x.cost_per_each), 0);
+      return {
+        name: x.product_name,
+        unit: x.unit || "PCS",
+        current,
+        reorder,
+        qtyToBuy,
+        unitCost,
+        total: qtyToBuy * unitCost,
+      };
+    });
+
+    const totalCost = rows.reduce((sum, row) => sum + row.total, 0);
+    const printWindow = window.open("", "_blank", "width=1000,height=800");
+
+    if (!printWindow) {
+      alert("Browser imezuia print window. Ruhusu pop-ups kisha ujaribu tena.");
+      return;
+    }
+
+    const generatedAt = new Date().toLocaleString("en-TZ", {
+      dateStyle: "medium",
+      timeStyle: "short",
+    });
+    const businessName = business?.business_name || "Bless Stationery";
+
+    printWindow.document.write(`<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <title>Bless Stationery - Low Stock Purchase List</title>
+  <style>
+    *{box-sizing:border-box}
+    body{font-family:Arial,sans-serif;color:#111;padding:28px;font-size:12px}
+    h1{margin:0 0 6px;font-size:22px}
+    h2{margin:0 0 4px;font-size:16px}
+    .muted{color:#666;margin-bottom:18px}
+    table{width:100%;border-collapse:collapse;margin-top:18px}
+    th,td{border:1px solid #ccc;padding:8px;text-align:left}
+    th{background:#f2f4f7}
+    .num{text-align:right}
+    tfoot td{font-weight:700;font-size:14px;background:#fafafa}
+    .note{margin-top:16px;padding:10px;border:1px solid #ddd;background:#fafafa}
+    @media print{body{padding:0}.no-print{display:none}}
+  </style>
+</head>
+<body>
+  <h1>${escapeHtml(businessName)}</h1>
+  <h2>Low Stock Purchase List</h2>
+  <div class="muted">Generated: ${generatedAt}</div>
+  <table>
+    <thead>
+      <tr>
+        <th>#</th>
+        <th>Product</th>
+        <th>Unit</th>
+        <th class="num">Current Stock</th>
+        <th class="num">Reorder Level</th>
+        <th class="num">Qty to Buy</th>
+        <th class="num">Cost / Each</th>
+        <th class="num">Estimated Cost</th>
+      </tr>
+    </thead>
+    <tbody>
+      ${rows.map((row, i) => `
+        <tr>
+          <td>${i + 1}</td>
+          <td>${String(row.name || "").replace(/[&<>\"]/g, (m) => ({"&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;"}[m]))}</td>
+          <td>${row.unit}</td>
+          <td class="num">${row.current}</td>
+          <td class="num">${row.reorder}</td>
+          <td class="num"><strong>${row.qtyToBuy}</strong></td>
+          <td class="num">${money(row.unitCost)}</td>
+          <td class="num">${money(row.total)}</td>
+        </tr>
+      `).join("")}
+    </tbody>
+    <tfoot>
+      <tr>
+        <td colspan="7" class="num">TOTAL ESTIMATED PURCHASE COST</td>
+        <td class="num">${money(totalCost)}</td>
+      </tr>
+    </tfoot>
+  </table>
+  <div class="note">Qty to Buy imehesabiwa kufikisha kila bidhaa kwenye Reorder Level. Rekebisha kiasi kabla ya kununua ikiwa mahitaji ya biashara yanahitaji zaidi.</div>
+  <script>window.onload=function(){window.print();}</script>
+</body>
+</html>`);
+
+    printWindow.document.close();
+    setTimeout(() => {
+      try {
+        printWindow.focus();
+        printWindow.print();
+      } catch (e) {}
+    }, 300);
   }
 
   if (loading) return <PageLoading />;
@@ -1836,9 +2107,14 @@ function Dashboard({ businessId, go, refresh }) {
               <h3>Low Stock Alert</h3>
               <span>Bidhaa zinazohitaji kuongezewa</span>
             </div>
-            <button className="text-btn" onClick={() => go("products")}>
-              View all
-            </button>
+            <div className="panel-header-actions">
+              <button className="secondary-btn small-btn" onClick={printLowStockPurchaseList}>
+                🖨 Print Purchase List
+              </button>
+              <button className="text-btn" onClick={() => go("products")}>
+                View all
+              </button>
+            </div>
           </div>
 
           {lowProducts.length === 0 ? (
@@ -1851,14 +2127,22 @@ function Dashboard({ businessId, go, refresh }) {
                     <strong>{x.product_name}</strong>
                     <span>{x.unit}</span>
                   </div>
-                  <div
-                    className={
-                      x.currentStock <= 0
-                        ? "stock-danger"
-                        : "stock-warning"
-                    }
-                  >
-                    {x.currentStock} {x.unit}
+                  <div style={{ textAlign: "right" }}>
+                    <div
+                      className={
+                        x.currentStock <= 0
+                          ? "stock-danger"
+                          : "stock-warning"
+                      }
+                    >
+                      {x.currentStock} {x.unit}
+                    </div>
+                    <div style={{ fontSize: 12, color: "#666", marginTop: 3 }}>
+                      Reorder: {x.reorder_level} {x.unit}
+                    </div>
+                    <div style={{ fontSize: 12, color: "#b42318", fontWeight: 700, marginTop: 2 }}>
+                      Ongeza: {Math.max(number(x.reorder_level) - number(x.currentStock), 0)} {x.unit}
+                    </div>
                   </div>
                 </div>
               ))}
@@ -1922,6 +2206,8 @@ function ProductsPage({ businessId, onChanged }) {
   const [sales, setSales] = useState([]);
   const [search, setSearch] = useState("");
   const [showForm, setShowForm] = useState(false);
+  const [editingId, setEditingId] = useState(null);
+  const [stockFilter, setStockFilter] = useState("ALL");
   const [busy, setBusy] = useState(false);
 
   const [form, setForm] = useState({
@@ -1969,35 +2255,73 @@ function ProductsPage({ businessId, onChanged }) {
       })
       .filter((x) =>
         x.product_name.toLowerCase().includes(search.toLowerCase())
-      );
+      )
+      .filter((x) => {
+        if (stockFilter === "LOW") return x.currentStock <= number(x.reorder_level);
+        if (stockFilter === "OUT") return x.currentStock <= 0;
+        if (stockFilter === "OK") return x.currentStock > number(x.reorder_level);
+        return true;
+      });
   }, [products, stockIn, sales, search]);
+
+  function resetProductForm() {
+    setForm({
+      product_name: "",
+      unit: "PCS",
+      opening_qty: "0",
+      cost_per_each: "",
+      sell_per_each: "",
+      reorder_level: "5",
+    });
+    setEditingId(null);
+  }
+
+  function startEditProduct(product) {
+    setEditingId(product.id);
+    setForm({
+      product_name: product.product_name || "",
+      unit: product.unit || "PCS",
+      opening_qty: String(product.opening_qty ?? 0),
+      cost_per_each: String(product.cost_per_each ?? ""),
+      sell_per_each: String(product.sell_per_each ?? ""),
+      reorder_level: String(product.reorder_level ?? 5),
+    });
+    setShowForm(true);
+    window.scrollTo({ top: 0, behavior: "smooth" });
+  }
 
   async function addProduct(e) {
     e.preventDefault();
+
+    if (!form.product_name.trim()) {
+      alert("Weka jina la bidhaa.");
+      return;
+    }
+    if (positiveNumber(form.cost_per_each) < 0 || positiveNumber(form.sell_per_each) < 0) {
+      alert("Bei haiwezi kuwa chini ya 0.");
+      return;
+    }
+
     setBusy(true);
 
-    const { error } = await supabase.from("products").insert({
-      business_id: businessId,
+    const payload = {
       product_name: form.product_name.trim(),
       unit: form.unit.trim() || "PCS",
-      opening_qty: number(form.opening_qty),
-      cost_per_each: number(form.cost_per_each),
-      sell_per_each: number(form.sell_per_each),
-      reorder_level: number(form.reorder_level),
+      opening_qty: positiveNumber(form.opening_qty),
+      cost_per_each: positiveNumber(form.cost_per_each),
+      sell_per_each: positiveNumber(form.sell_per_each),
+      reorder_level: positiveNumber(form.reorder_level),
       active: true,
-    });
+    };
 
-    if (error) {
-      alert(error.message.includes("duplicate") ? "Bidhaa hiyo tayari ipo." : error.message);
+    const result = editingId
+      ? await supabase.from("products").update(payload).eq("id", editingId).eq("business_id", businessId)
+      : await supabase.from("products").insert({ business_id: businessId, ...payload });
+
+    if (result.error) {
+      alert(result.error.message.includes("duplicate") ? "Bidhaa hiyo tayari ipo." : result.error.message);
     } else {
-      setForm({
-        product_name: "",
-        unit: "PCS",
-        opening_qty: "0",
-        cost_per_each: "",
-        sell_per_each: "",
-        reorder_level: "5",
-      });
+      resetProductForm();
       setShowForm(false);
       await load();
       onChanged();
@@ -2030,16 +2354,16 @@ function ProductsPage({ businessId, onChanged }) {
       <PageTitle
         title="Products"
         subtitle="Simamia bidhaa, bei na stock."
-        button="+ Add Product"
-        onClick={() => setShowForm(!showForm)}
+        button={showForm ? "Close Form" : "+ Add Product"}
+        onClick={() => { if (showForm) { setShowForm(false); resetProductForm(); } else setShowForm(true); }}
       />
 
       {showForm && (
         <div className="panel form-panel">
           <div className="panel-header">
             <div>
-              <h3>Ongeza Bidhaa Mpya</h3>
-              <span>Jaza taarifa za bidhaa</span>
+              <h3>{editingId ? "Hariri Bidhaa" : "Ongeza Bidhaa Mpya"}</h3>
+              <span>{editingId ? "Sasisha taarifa za bidhaa bila kupoteza stock history." : "Jaza taarifa za bidhaa"}</span>
             </div>
           </div>
 
@@ -2084,7 +2408,7 @@ function ProductsPage({ businessId, onChanged }) {
 
             <div className="form-actions full">
               <button className="primary-btn" disabled={busy}>
-                {busy ? "Inahifadhi..." : "Save Product"}
+                {busy ? "Inahifadhi..." : editingId ? "Update Product" : "Save Product"}
               </button>
               <button
                 type="button"
@@ -2108,7 +2432,26 @@ function ProductsPage({ businessId, onChanged }) {
               onChange={(e) => setSearch(e.target.value)}
             />
           </div>
-          <span className="record-count">{rows.length} products</span>
+          <div className="toolbar-actions">
+            <select value={stockFilter} onChange={(e) => setStockFilter(e.target.value)}>
+              <option value="ALL">All Stock</option>
+              <option value="LOW">Low Stock</option>
+              <option value="OUT">Out of Stock</option>
+              <option value="OK">Stock OK</option>
+            </select>
+            <button className="secondary-btn small-btn" onClick={() => {
+              const exportRows = rows.map((p) => ({
+                Product: p.product_name,
+                Unit: p.unit,
+                "Current Stock": p.currentStock,
+                "Reorder Level": p.reorder_level,
+                "Cost / Each": p.cost_per_each,
+                "Selling Price": p.sell_per_each,
+              }));
+              exportToExcel(exportRows, `Bless-Stationery-Products-${todayDateInput()}.xlsx`, "Products");
+            }}>⬇ Export</button>
+            <span className="record-count">{rows.length} products</span>
+          </div>
         </div>
 
         <div className="table-wrap">
@@ -2141,14 +2484,15 @@ function ProductsPage({ businessId, onChanged }) {
                   <td>{money(p.sell_per_each)}</td>
                   <td>{p.reorder_level}</td>
                   <td>
-                    <button
-                      className="danger-small"
-                      onClick={() =>
-                        deleteProduct(p.id, p.product_name)
-                      }
-                    >
-                      Delete
-                    </button>
+                    <div className="row-actions">
+                      <button className="secondary-btn small-btn" onClick={() => startEditProduct(p)}>Edit</button>
+                      <button
+                        className="danger-small"
+                        onClick={() => deleteProduct(p.id, p.product_name)}
+                      >
+                        Delete
+                      </button>
+                    </div>
                   </td>
                 </tr>
               ))}
@@ -2173,6 +2517,199 @@ function StockBadge({ stock, reorder }) {
   if (stock <= number(reorder))
     return <span className="badge warning">{stock}</span>;
   return <span className="badge success">{stock}</span>;
+}
+
+
+function InventoryHistoryPage({ businessId, refresh }) {
+  const [products, setProducts] = useState([]);
+  const [stockIn, setStockIn] = useState([]);
+  const [sales, setSales] = useState([]);
+  const [loading, setLoading] = useState(false);
+  const [productFilter, setProductFilter] = useState("ALL");
+  const [typeFilter, setTypeFilter] = useState("ALL");
+  const [search, setSearch] = useState("");
+
+  useEffect(() => {
+    load();
+  }, [businessId, refresh]);
+
+  async function load() {
+    if (!businessId) return;
+    setLoading(true);
+    const [{ data: p, error: pe }, { data: si, error: se }, { data: sa, error: saleError }] = await Promise.all([
+      supabase.from("products").select("id, product_name, unit, opening_qty, cost_per_each, active").eq("business_id", businessId).order("product_name"),
+      supabase.from("stock_in").select("id, product_id, quantity_in, cost_per_each, stock_date, staff_id").eq("business_id", businessId).order("stock_date", { ascending: true }),
+      supabase.from("sales").select("id, product_id, quantity, unit_cost, selling_price, sale_date, payment_method, staff_id").eq("business_id", businessId).not("product_id", "is", null).order("sale_date", { ascending: true }),
+    ]);
+
+    if (pe || se || saleError) {
+      alert((pe || se || saleError)?.message || "Imeshindikana kupakia inventory history.");
+    }
+    setProducts(p || []);
+    setStockIn(si || []);
+    setSales(sa || []);
+    setLoading(false);
+  }
+
+  const productMap = useMemo(() => {
+    const map = {};
+    (products || []).forEach((p) => { map[p.id] = p; });
+    return map;
+  }, [products]);
+
+  const movements = useMemo(() => {
+    const rows = [];
+
+    (products || []).forEach((p) => {
+      rows.push({
+        id: `opening-${p.id}`,
+        date: null,
+        product_id: p.id,
+        product_name: p.product_name,
+        unit: p.unit || "PCS",
+        type: "OPENING",
+        qty: number(p.opening_qty),
+        balanceDelta: number(p.opening_qty),
+        cost: number(p.cost_per_each),
+        reference: "Opening Stock",
+        payment: "—",
+        staff_id: null,
+      });
+    });
+
+    (stockIn || []).forEach((r) => {
+      const p = productMap[r.product_id];
+      if (!p) return;
+      rows.push({
+        id: `stock-${r.id}`,
+        date: r.stock_date,
+        product_id: r.product_id,
+        product_name: p.product_name,
+        unit: p.unit || "PCS",
+        type: "STOCK IN",
+        qty: number(r.quantity_in),
+        balanceDelta: number(r.quantity_in),
+        cost: number(r.cost_per_each),
+        reference: "Stock In",
+        payment: "—",
+        staff_id: r.staff_id,
+      });
+    });
+
+    (sales || []).forEach((r) => {
+      const p = productMap[r.product_id];
+      if (!p) return;
+      rows.push({
+        id: `sale-${r.id}`,
+        date: r.sale_date,
+        product_id: r.product_id,
+        product_name: p.product_name,
+        unit: p.unit || "PCS",
+        type: "SALE",
+        qty: number(r.quantity),
+        balanceDelta: -number(r.quantity),
+        cost: number(r.unit_cost),
+        reference: "Sale",
+        payment: r.payment_method || "—",
+        staff_id: r.staff_id,
+      });
+    });
+
+    const filtered = rows.filter((r) => {
+      const matchesProduct = productFilter === "ALL" || r.product_id === productFilter;
+      const matchesType = typeFilter === "ALL" || r.type === typeFilter;
+      const q = search.trim().toLowerCase();
+      const matchesSearch = !q || r.product_name.toLowerCase().includes(q) || r.type.toLowerCase().includes(q) || r.reference.toLowerCase().includes(q);
+      return matchesProduct && matchesType && matchesSearch;
+    });
+
+    filtered.sort((a, b) => {
+      if (a.product_id !== b.product_id) return a.product_name.localeCompare(b.product_name);
+      if (!a.date && !b.date) return -1;
+      if (!a.date) return -1;
+      if (!b.date) return 1;
+      return new Date(a.date) - new Date(b.date) || (a.type === "STOCK IN" ? -1 : 1);
+    });
+
+    const balances = {};
+    return filtered.map((r) => {
+      balances[r.product_id] = number(balances[r.product_id]) + r.balanceDelta;
+      return { ...r, balance: balances[r.product_id] };
+    });
+  }, [products, stockIn, sales, productMap, productFilter, typeFilter, search]);
+
+  const totals = useMemo(() => ({
+    stockIn: movements.filter((x) => x.type === "STOCK IN").reduce((a, x) => a + x.qty, 0),
+    sold: movements.filter((x) => x.type === "SALE").reduce((a, x) => a + x.qty, 0),
+    opening: movements.filter((x) => x.type === "OPENING").reduce((a, x) => a + x.qty, 0),
+  }), [movements]);
+
+  function printHistory() {
+    if (!movements.length) {
+      alert("Hakuna inventory history ya kuchapisha.");
+      return;
+    }
+    const w = window.open("", "_blank", "width=1100,height=800");
+    if (!w) {
+      alert("Browser imezuia print window. Ruhusu pop-ups kisha ujaribu tena.");
+      return;
+    }
+    w.document.write(`<!doctype html><html><head><meta charset="utf-8"><title>Inventory History</title><style>body{font-family:Arial,sans-serif;padding:24px;color:#111;font-size:12px}h1{margin:0 0 4px}.muted{color:#666;margin-bottom:18px}table{width:100%;border-collapse:collapse}th,td{border:1px solid #ccc;padding:7px}th{background:#f2f4f7;text-align:left}.num{text-align:right}.summary{margin:14px 0;font-weight:700}@media print{body{padding:0}}</style></head><body><h1>Inventory Movement History</h1><div class="muted">Generated: ${escapeHtml(formatDate(new Date()))}</div><div class="summary">Opening: ${escapeHtml(String(totals.opening))} | Stock In: ${escapeHtml(String(totals.stockIn))} | Sold: ${escapeHtml(String(totals.sold))}</div><table><thead><tr><th>Date</th><th>Product</th><th>Type</th><th>Qty</th><th>Balance</th><th>Cost</th><th>Reference</th><th>Payment</th></tr></thead><tbody>${movements.map(r => `<tr><td>${escapeHtml(r.date ? formatDate(r.date) : "Opening")}</td><td>${escapeHtml(r.product_name)}</td><td>${escapeHtml(r.type)}</td><td class="num">${escapeHtml(String(r.qty))}</td><td class="num">${escapeHtml(String(r.balance))}</td><td class="num">${escapeHtml(money(r.cost))}</td><td>${escapeHtml(r.reference)}</td><td>${escapeHtml(r.payment)}</td></tr>`).join("")}</tbody></table><script>window.onload=function(){window.print();}</script></body></html>`);
+    w.document.close();
+  }
+
+  return (
+    <div>
+      <PageTitle title="Inventory History" subtitle="Fuatilia kila kuingia na kutoka kwa bidhaa pamoja na running stock balance." />
+
+      <div className="stats-grid">
+        <StatCard title="Opening Qty" value={number(totals.opening)} icon="◷" />
+        <StatCard title="Stock In" value={number(totals.stockIn)} icon="↑" />
+        <StatCard title="Sold Qty" value={number(totals.sold)} icon="↓" />
+        <StatCard title="Movements" value={movements.length} icon="↕" />
+      </div>
+
+      <div className="panel">
+        <div className="panel-header">
+          <div>
+            <h3>Stock Movement Ledger</h3>
+            <span>Opening stock, Stock In na Sales kwa kila bidhaa.</span>
+          </div>
+          <button className="secondary-btn" onClick={printHistory}>🖨 Print</button>
+        </div>
+
+        <div className="form-grid compact">
+          <Field label="Search" value={search} onChange={setSearch} placeholder="Product au movement..." />
+          <SelectField label="Product" value={productFilter} onChange={setProductFilter} options={[{ value: "ALL", label: "All Products" }, ...(products || []).map(p => ({ value: p.id, label: `${p.product_name} (${p.unit || "PCS"})` }))]} />
+          <SelectField label="Movement" value={typeFilter} onChange={setTypeFilter} options={[{ value: "ALL", label: "All Movements" }, { value: "OPENING", label: "Opening" }, { value: "STOCK IN", label: "Stock In" }, { value: "SALE", label: "Sale" }]} />
+        </div>
+      </div>
+
+      <div className="panel">
+        <div className="table-wrap">
+          <table>
+            <thead><tr><th>Date</th><th>Product</th><th>Movement</th><th>Qty</th><th>Balance</th><th>Cost</th><th>Reference</th><th>Payment</th></tr></thead>
+            <tbody>
+              {loading && <tr><td colSpan="8"><p>Inapakia inventory history...</p></td></tr>}
+              {!loading && movements.map((r) => (
+                <tr key={r.id}>
+                  <td>{r.date ? formatDate(r.date) : <span className="muted">Opening</span>}</td>
+                  <td><strong>{r.product_name}</strong><div className="muted">{r.unit}</div></td>
+                  <td><span className={`badge ${r.type === "SALE" ? "danger" : r.type === "STOCK IN" ? "success" : "warning"}`}>{r.type}</span></td>
+                  <td className={r.type === "SALE" ? "num" : "num"}>{r.type === "SALE" ? `-${r.qty}` : `+${r.qty}`}</td>
+                  <td className="num"><strong>{r.balance}</strong></td>
+                  <td className="num">{money(r.cost)}</td>
+                  <td>{r.reference}</td>
+                  <td>{r.payment}</td>
+                </tr>
+              ))}
+              {!loading && !movements.length && <tr><td colSpan="8"><EmptyState text="Hakuna inventory movement inayolingana na filter." /></td></tr>}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+  );
 }
 
 function StockInPage({ businessId, staff, onChanged }) {
@@ -2215,6 +2752,18 @@ function StockInPage({ businessId, staff, onChanged }) {
     if (!form.product_id && p?.length) {
       setForm((f) => ({ ...f, product_id: p[0].id }));
     }
+  }
+
+  function chooseStockProduct(id) {
+    const p = products.find((x) => x.id === id);
+    setForm((f) => ({
+      ...f,
+      product_id: id,
+      cost_per_each: p?.cost_per_each ?? f.cost_per_each,
+      selling_price: p?.sell_per_each ?? f.selling_price,
+      unit: p?.unit || f.unit || "PCS",
+      reorder_level: p?.reorder_level ?? f.reorder_level,
+    }));
   }
 
   async function saveStock(e) {
@@ -2480,7 +3029,7 @@ function StockInPage({ businessId, staff, onChanged }) {
   );
 }
 
-function SalesPage({ businessId, staff, onChanged }) {
+function SalesPage({ businessId, staff, business, onChanged }) {
   const [products, setProducts] = useState([]);
   const [services, setServices] = useState([]);
   const [sales, setSales] = useState([]);
@@ -2718,6 +3267,26 @@ function SalesPage({ businessId, staff, onChanged }) {
       total: qty * price,
       profit: qty * (price - cost),
       payment: form.payment_method,
+      customerName:
+        form.payment_method === "CREDIT"
+          ? form.credit_customer_name.trim()
+          : "",
+      customerPhone:
+        form.payment_method === "CREDIT"
+          ? form.credit_customer_phone.trim()
+          : "",
+      creditPaid:
+        form.payment_method === "CREDIT"
+          ? number(form.credit_paid_amount)
+          : 0,
+      creditBalance:
+        form.payment_method === "CREDIT"
+          ? Math.max(0, qty * price - number(form.credit_paid_amount))
+          : 0,
+      dueDate:
+        form.payment_method === "CREDIT"
+          ? form.credit_due_date
+          : "",
     });
 
     setForm({
@@ -2730,6 +3299,36 @@ function SalesPage({ businessId, staff, onChanged }) {
     await load();
     onChanged();
     setBusy(false);
+  }
+
+  function printSalesHistory() {
+    const rows = sales || [];
+    if (!rows.length) {
+      alert("Hakuna sales za kuchapisha.");
+      return;
+    }
+    const totalSales = rows.reduce((a, x) => a + number(x.sales_total), 0);
+    const totalProfit = rows.reduce((a, x) => a + number(x.profit), 0);
+    const printWindow = window.open("", "_blank", "width=1000,height=800");
+    if (!printWindow) {
+      alert("Browser imezuia print window. Ruhusu pop-ups kisha ujaribu tena.");
+      return;
+    }
+    printWindow.document.write(`<!doctype html><html><head><meta charset="utf-8"><title>Sales History</title>
+      <style>
+        body{font-family:Arial,sans-serif;padding:24px;color:#111;font-size:12px}
+        h1{margin:0 0 4px} .muted{color:#666;margin-bottom:18px}
+        table{width:100%;border-collapse:collapse}th,td{border:1px solid #ccc;padding:7px}th{background:#f2f4f7;text-align:left}
+        .num{text-align:right}.summary{margin-top:16px;font-weight:700}
+        @media print{body{padding:0}}
+      </style></head><body>
+      <h1>Sales History</h1><div class="muted">Generated: ${escapeHtml(formatDate(new Date()))}</div>
+      <table><thead><tr><th>Date</th><th>Item</th><th>Type</th><th>Qty</th><th>Payment</th><th>Total</th><th>Profit</th></tr></thead>
+      <tbody>${rows.map(x=>`<tr><td>${escapeHtml(formatDate(x.sale_date))}</td><td>${escapeHtml(x.products?.product_name||x.services?.service_name||"Manual Item")}</td><td>${escapeHtml(x.sale_type)}</td><td class="num">${number(x.quantity)}</td><td>${escapeHtml(x.payment_method)}</td><td class="num">${escapeHtml(money(x.sales_total))}</td><td class="num">${escapeHtml(money(x.profit))}</td></tr>`).join("")}</tbody>
+      </table>
+      <div class="summary">Total Sales: ${escapeHtml(money(totalSales))} &nbsp; | &nbsp; Total Profit: ${escapeHtml(money(totalProfit))}</div>
+      <script>window.onload=function(){window.print();}</script></body></html>`);
+    printWindow.document.close();
   }
 
   async function deleteSale(id) {
@@ -2837,7 +3436,7 @@ function SalesPage({ businessId, staff, onChanged }) {
                 label="Service"
                 value={form.service_id}
                 onChange={chooseService}
-                options={services.map((s) => ({
+                options={services.filter(s => s.service_name.toLowerCase().includes(search.toLowerCase())).map((s) => ({
                   value: s.id,
                   label: s.service_name,
                 }))}
@@ -3002,9 +3601,9 @@ function SalesPage({ businessId, staff, onChanged }) {
             </button>
             <button
               className="secondary-btn"
-              onClick={() => window.print()}
+              onClick={printSalesHistory}
             >
-              🖨 Print
+              🖨 Print History
             </button>
           </div>
         </div>
@@ -3069,6 +3668,7 @@ function SalesPage({ businessId, staff, onChanged }) {
       {receipt && (
         <ReceiptModal
           receipt={receipt}
+          business={business}
           onClose={() => setReceipt(null)}
         />
       )}
@@ -3076,9 +3676,167 @@ function SalesPage({ businessId, staff, onChanged }) {
   );
 }
 
-function ReceiptModal({ receipt, onClose }) {
+function ReceiptModal({ receipt, business, onClose }) {
   function printReceipt() {
+    const printWindow = window.open("", "_blank", "width=420,height=760");
+
+    if (!printWindow) {
+      alert("Browser imezuia dirisha la print. Ruhusu pop-ups kisha ujaribu tena.");
+      return;
+    }
+
+    const escapeHtml = (value) =>
+      String(value ?? "")
+        .replace(/&/g, "&amp;")
+        .replace(/</g, "&lt;")
+        .replace(/>/g, "&gt;")
+        .replace(/"/g, "&quot;")
+        .replace(/'/g, "&#039;");
+
+    const businessName = business?.business_name || "Bless Stationery";
+    const businessPhone = business?.phone || "";
+    const businessAddress = business?.address || "";
+    const receiptNo = String(receipt.id || "").slice(-8).toUpperCase();
+    const creditSection =
+      receipt.payment === "CREDIT"
+        ? `
+          <div class="divider"></div>
+          <div class="row"><span>Customer</span><strong>${escapeHtml(receipt.customerName || "-")}</strong></div>
+          ${
+            receipt.customerPhone
+              ? `<div class="row"><span>Phone</span><strong>${escapeHtml(receipt.customerPhone)}</strong></div>`
+              : ""
+          }
+          <div class="row"><span>Paid Now</span><strong>${escapeHtml(money(receipt.creditPaid))}</strong></div>
+          <div class="row balance"><span>Balance</span><strong>${escapeHtml(money(receipt.creditBalance))}</strong></div>
+          ${
+            receipt.dueDate
+              ? `<div class="row"><span>Due Date</span><strong>${escapeHtml(receipt.dueDate)}</strong></div>`
+              : ""
+          }
+        `
+        : "";
+
+    printWindow.document.write(`<!doctype html>
+<html>
+<head>
+<meta charset="utf-8" />
+<title>Receipt ${escapeHtml(receiptNo)}</title>
+<style>
+  @page { size: 80mm auto; margin: 4mm; }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    font-family: Arial, sans-serif;
+    color: #111;
+    font-size: 12px;
+    background: #fff;
+  }
+  .receipt {
+    width: 72mm;
+    margin: 0 auto;
+  }
+  .center { text-align: center; }
+  h1 { margin: 0 0 3px; font-size: 19px; }
+  .muted { color: #555; }
+  .small { font-size: 10px; }
+  .title { font-weight: 700; letter-spacing: .5px; margin-top: 4px; }
+  .divider {
+    border-top: 1px dashed #555;
+    margin: 9px 0;
+  }
+  .row {
+    display: flex;
+    justify-content: space-between;
+    gap: 10px;
+    margin: 5px 0;
+  }
+  .row span { color: #555; }
+  .row strong { text-align: right; }
+  .item {
+    display: flex;
+    justify-content: space-between;
+    gap: 10px;
+    margin: 7px 0;
+  }
+  .item-name { max-width: 45mm; font-weight: 700; }
+  .total {
+    display: flex;
+    justify-content: space-between;
+    font-size: 16px;
+    font-weight: 700;
+    margin: 9px 0;
+  }
+  .balance strong { font-size: 14px; }
+  .footer { text-align: center; margin-top: 14px; }
+  @media print {
+    body { width: 72mm; }
+  }
+</style>
+</head>
+<body>
+  <div class="receipt">
+    <div class="center">
+      <h1>${escapeHtml(businessName)}</h1>
+      ${businessAddress ? `<div class="muted small">${escapeHtml(businessAddress)}</div>` : ""}
+      ${businessPhone ? `<div class="muted small">${escapeHtml(businessPhone)}</div>` : ""}
+      <div class="title">SALES RECEIPT</div>
+    </div>
+
+    <div class="divider"></div>
+
+    <div class="row">
+      <span>Receipt No.</span>
+      <strong>${escapeHtml(receiptNo)}</strong>
+    </div>
+    <div class="row">
+      <span>Date</span>
+      <strong>${escapeHtml(formatDate(receipt.date))}</strong>
+    </div>
+
+    <div class="divider"></div>
+
+    <div class="item">
+      <span class="item-name">${escapeHtml(receipt.itemName)}</span>
+      <strong>${escapeHtml(money(receipt.total))}</strong>
+    </div>
+    <div class="row">
+      <span>${escapeHtml(receipt.quantity)} × ${escapeHtml(money(receipt.sellingPrice))}</span>
+      <strong>${escapeHtml(money(receipt.total))}</strong>
+    </div>
+
+    <div class="divider"></div>
+
+    <div class="total">
+      <span>TOTAL</span>
+      <span>${escapeHtml(money(receipt.total))}</span>
+    </div>
+
+    <div class="row">
+      <span>Payment</span>
+      <strong>${escapeHtml(receipt.payment)}</strong>
+    </div>
+
+    ${creditSection}
+
+    <div class="footer">
+      <div>Asante kwa kufanya biashara nasi.</div>
+      <div class="muted small">${escapeHtml(businessName)}</div>
+    </div>
+  </div>
+<script>
+  window.onload = function () {
+    window.focus();
     window.print();
+  };
+  window.onafterprint = function () {
+    window.close();
+  };
+</script>
+</body>
+</html>`);
+
+    printWindow.document.close();
   }
 
   return (
@@ -3096,7 +3854,7 @@ function ReceiptModal({ receipt, onClose }) {
         <div className="receipt-print">
           <div className="receipt-header">
             <div className="receipt-logo">B</div>
-            <h2>Bless Stationery</h2>
+            <h2>{business?.business_name || "Bless Stationery"}</h2>
             <p>SALES RECEIPT</p>
           </div>
 
@@ -3140,7 +3898,7 @@ function ReceiptModal({ receipt, onClose }) {
 
           <div className="receipt-footer">
             <p>Asante kwa kufanya biashara nasi.</p>
-            <small>Bless Stationery</small>
+            <small>{business?.business_name || "Bless Stationery"}</small>
           </div>
         </div>
 
@@ -3156,6 +3914,8 @@ function ReceiptModal({ receipt, onClose }) {
 function ServicesPage({ businessId, onChanged }) {
   const [services, setServices] = useState([]);
   const [show, setShow] = useState(false);
+  const [editingId, setEditingId] = useState(null);
+  const [search, setSearch] = useState("");
   const [form, setForm] = useState({
     service_name: "",
     selling_price: "",
@@ -3177,25 +3937,42 @@ function ServicesPage({ businessId, onChanged }) {
     setServices(data || []);
   }
 
+  function resetServiceForm() {
+    setForm({ service_name: "", selling_price: "", cost: "0" });
+    setEditingId(null);
+  }
+
+  function startEditService(row) {
+    setEditingId(row.id);
+    setForm({
+      service_name: row.service_name || "",
+      selling_price: String(row.selling_price ?? ""),
+      cost: String(row.cost ?? "0"),
+    });
+    setShow(true);
+    window.scrollTo({ top: 0, behavior: "smooth" });
+  }
+
   async function addService(e) {
     e.preventDefault();
+    if (!form.service_name.trim()) { alert("Weka jina la service."); return; }
+    if (positiveNumber(form.selling_price) < 0 || positiveNumber(form.cost) < 0) { alert("Bei haiwezi kuwa chini ya 0."); return; }
 
-    const { error } = await supabase.from("services").insert({
-      business_id: businessId,
+    const payload = {
       service_name: form.service_name.trim(),
-      selling_price: number(form.selling_price),
-      cost: number(form.cost),
+      selling_price: positiveNumber(form.selling_price),
+      cost: positiveNumber(form.cost),
       active: true,
-    });
+    };
 
-    if (error) {
-      alert(error.message);
+    const result = editingId
+      ? await supabase.from("services").update(payload).eq("id", editingId).eq("business_id", businessId)
+      : await supabase.from("services").insert({ business_id: businessId, ...payload });
+
+    if (result.error) {
+      alert(result.error.message);
     } else {
-      setForm({
-        service_name: "",
-        selling_price: "",
-        cost: "0",
-      });
+      resetServiceForm();
       setShow(false);
       await load();
       onChanged();
@@ -3226,12 +4003,13 @@ function ServicesPage({ businessId, onChanged }) {
       <PageTitle
         title="Services"
         subtitle="Simamia huduma na bei zake."
-        button="+ Add Service"
-        onClick={() => setShow(!show)}
+        button={show ? "Close Form" : "+ Add Service"}
+        onClick={() => { if (show) { setShow(false); resetServiceForm(); } else setShow(true); }}
       />
 
       {show && (
         <div className="panel">
+          <div className="panel-header"><div><h3>{editingId ? "Hariri Service" : "Ongeza Service"}</h3><span>Bei ya kuuza na gharama ya huduma.</span></div></div>
           <form onSubmit={addService} className="form-grid">
             <Field
               label="Service Name"
@@ -3258,30 +4036,43 @@ function ServicesPage({ businessId, onChanged }) {
             />
 
             <div className="form-actions full">
-              <button className="primary-btn">Save Service</button>
+              <button className="primary-btn">{editingId ? "Update Service" : "Save Service"}</button>
             </div>
           </form>
         </div>
       )}
 
+      <div className="panel">
+        <div className="toolbar">
+          <div className="search-box"><span>🔎</span><input placeholder="Search service..." value={search} onChange={e=>setSearch(e.target.value)} /></div>
+          <button className="secondary-btn small-btn" onClick={() => exportToExcel(
+            services.map(s => ({ Service: s.service_name, "Selling Price": s.selling_price, Cost: s.cost, Profit: number(s.selling_price) - number(s.cost) })),
+            `Bless-Stationery-Services-${todayDateInput()}.xlsx`, "Services"
+          )}>⬇ Export</button>
+          <span className="record-count">{services.filter(s => s.service_name.toLowerCase().includes(search.toLowerCase())).length} services</span>
+        </div>
+      </div>
+
       <div className="service-grid">
-        {services.map((s) => (
+        {services.filter((s) => s.service_name.toLowerCase().includes(search.toLowerCase())).map((s) => (
           <div className="service-card" key={s.id}>
             <div className="service-icon">⚙</div>
             <h3>{s.service_name}</h3>
             <span>Price</span>
             <strong>{money(s.selling_price)}</strong>
-            <button
-              className="danger-small"
-              onClick={() => deleteService(s.id)}
-            >
-              Delete
-            </button>
+            <div className="row-actions">
+              <button className="secondary-btn small-btn" onClick={() => startEditService(s)}>
+                Edit
+              </button>
+              <button className="danger-small" onClick={() => deleteService(s.id)}>
+                Delete
+              </button>
+            </div>
           </div>
         ))}
 
-        {!services.length && (
-          <EmptyState text="Hakuna services." />
+        {!services.filter((s) => s.service_name.toLowerCase().includes(search.toLowerCase())).length && (
+          <EmptyState text={services.length ? "Hakuna service inayolingana na search." : "Hakuna services."} />
         )}
       </div>
     </div>
@@ -3290,6 +4081,7 @@ function ServicesPage({ businessId, onChanged }) {
 
 function ExpensesPage({ businessId, staff, onChanged }) {
   const [records, setRecords] = useState([]);
+  const [busy, setBusy] = useState(false);
   const [form, setForm] = useState({
     expense_item: "",
     category: "Other",
@@ -3317,6 +4109,10 @@ function ExpensesPage({ businessId, staff, onChanged }) {
   async function save(e) {
     e.preventDefault();
 
+    if (!form.expense_item.trim()) { alert("Weka jina la expense."); return; }
+    if (number(form.amount) <= 0) { alert("Amount lazima iwe zaidi ya 0."); return; }
+
+    setBusy(true);
     const { error } = await supabase.from("expenses").insert({
       business_id: businessId,
       expense_date: new Date(form.expense_date).toISOString(),
@@ -3339,6 +4135,7 @@ function ExpensesPage({ businessId, staff, onChanged }) {
       await load();
       onChanged();
     }
+    setBusy(false);
   }
 
   async function remove(id) {
@@ -3397,14 +4194,6 @@ function ExpensesPage({ businessId, staff, onChanged }) {
           />
 
           <Field
-            label="Deposit Date & Time"
-            type="datetime-local"
-            value={form.deposit_date}
-            onChange={(v) => setForm({ ...form, deposit_date: v })}
-            required
-          />
-
-          <Field
             label="Amount"
             type="number"
             value={form.amount}
@@ -3421,11 +4210,12 @@ function ExpensesPage({ businessId, staff, onChanged }) {
           />
 
           <div className="form-actions full">
-            <button className="primary-btn">Save Expense</button>
+            <button className="primary-btn" disabled={busy}>{busy ? "Inahifadhi..." : "Save Expense"}</button>
           </div>
         </form>
       </div>
 
+      <div className="stats-grid small-stats"><StatCard title="Total Expenses" value={money(records.reduce((a,r)=>a+number(r.amount),0))} icon="💸" tone="red" /><StatCard title="Records" value={records.length} icon="🧾" tone="blue" /></div>
       <div className="panel">
         <div className="panel-header">
           <div>
@@ -3490,6 +4280,7 @@ function ExpensesPage({ businessId, staff, onChanged }) {
 
 function DepositsPage({ businessId, staff, onChanged }) {
   const [records, setRecords] = useState([]);
+  const [busy, setBusy] = useState(false);
   const [form, setForm] = useState({
     amount: "",
     method: "CASH",
@@ -3517,7 +4308,9 @@ function DepositsPage({ businessId, staff, onChanged }) {
 
   async function save(e) {
     e.preventDefault();
+    if (number(form.amount) <= 0) { alert("Amount lazima iwe zaidi ya 0."); return; }
 
+    setBusy(true);
     const { error } = await supabase.from("deposits").insert({
       business_id: businessId,
       deposit_date: new Date(form.deposit_date).toISOString(),
@@ -3542,6 +4335,7 @@ function DepositsPage({ businessId, staff, onChanged }) {
       await load();
       onChanged();
     }
+    setBusy(false);
   }
 
   async function remove(id) {
@@ -3593,6 +4387,14 @@ function DepositsPage({ businessId, staff, onChanged }) {
           />
 
           <Field
+            label="Deposit Date & Time"
+            type="datetime-local"
+            value={form.deposit_date}
+            onChange={(v) => setForm({ ...form, deposit_date: v })}
+            required
+          />
+
+          <Field
             label="Depositor"
             value={form.depositor}
             onChange={(v) => setForm({ ...form, depositor: v })}
@@ -3613,11 +4415,12 @@ function DepositsPage({ businessId, staff, onChanged }) {
           />
 
           <div className="form-actions full">
-            <button className="primary-btn">Save Deposit</button>
+            <button className="primary-btn" disabled={busy}>{busy ? "Inahifadhi..." : "Save Deposit"}</button>
           </div>
         </form>
       </div>
 
+      <div className="stats-grid small-stats"><StatCard title="Total Deposits" value={money(records.reduce((a,r)=>a+number(r.amount),0))} icon="🏦" tone="green" /><StatCard title="Records" value={records.length} icon="🧾" tone="blue" /></div>
       <div className="panel">
         <div className="panel-header">
           <div>
@@ -3844,13 +4647,13 @@ function ReportsPage({ businessId, refresh }) {
     const depositsTotal = report.deposits.reduce((a, x) => a + number(x.amount), 0);
 
     const salesRows = report.sales.map((x) => `
-      <tr><td>${formatDate(x.sale_date)}</td><td>${x.sale_type || "-"}</td><td>${x.quantity || 0}</td><td>${money(x.sales_total)}</td><td>${money(x.profit)}</td><td>${x.payment_method || "-"}</td></tr>
+      <tr><td>${escapeHtml(formatDate(x.sale_date))}</td><td>${escapeHtml(x.sale_type || "-")}</td><td>${number(x.quantity)}</td><td>${escapeHtml(money(x.sales_total))}</td><td>${escapeHtml(money(x.profit))}</td><td>${escapeHtml(x.payment_method || "-")}</td></tr>
     `).join("");
     const expenseRows = report.expenses.map((x) => `
-      <tr><td>${formatDate(x.expense_date)}</td><td>${x.expense_item || "-"}</td><td>${x.category || "-"}</td><td>${money(x.amount)}</td><td>${x.description || "-"}</td></tr>
+      <tr><td>${escapeHtml(formatDate(x.expense_date))}</td><td>${escapeHtml(x.expense_item || "-")}</td><td>${escapeHtml(x.category || "-")}</td><td>${escapeHtml(money(x.amount))}</td><td>${escapeHtml(x.description || "-")}</td></tr>
     `).join("");
     const depositRows = report.deposits.map((x) => `
-      <tr><td>${formatDate(x.deposit_date)}</td><td>${money(x.amount)}</td><td>${x.method || "-"}</td><td>${x.depositor || "-"}</td><td>${x.reference_no || "-"}</td></tr>
+      <tr><td>${escapeHtml(formatDate(x.deposit_date))}</td><td>${escapeHtml(money(x.amount))}</td><td>${escapeHtml(x.method || "-")}</td><td>${escapeHtml(x.depositor || "-")}</td><td>${escapeHtml(x.reference_no || "-")}</td></tr>
     `).join("");
 
     printWindow.document.write(`<!doctype html><html><head><title>${title}</title><style>
@@ -3867,6 +4670,12 @@ function ReportsPage({ businessId, refresh }) {
       <script>window.onload=function(){window.print();}</script>
     </body></html>`);
     printWindow.document.close();
+    setTimeout(() => {
+      try {
+        printWindow.focus();
+        printWindow.print();
+      } catch (e) {}
+    }, 300);
   }
 
   const salesTotal = data.sales.reduce((a, x) => a + number(x.sales_total), 0);
@@ -3980,8 +4789,8 @@ function ReportsPage({ businessId, refresh }) {
       <div className="stats-grid">
         <StatCard title="Credit Sales" value={money(data.credits.reduce((a,x)=>a+number(x.original_amount),0))} icon="💳" tone="orange" />
         <StatCard title="Outstanding Debt" value={money(creditBalance)} icon="📒" tone="red" />
-        <StatCard title="Staff Present" value={data.attendance.length} icon="👥" tone="green" />
-        <StatCard title="Staff Absent" value={data.attendance.length} icon="◷" tone="purple" />
+        <StatCard title="Staff Present" value={data.attendance.filter(a => !!a.check_in_at).length} icon="👥" tone="green" />
+        <StatCard title="Attendance Records" value={data.attendance.length} icon="◷" tone="purple" />
       </div>
 
       <div className="panel">
@@ -4098,6 +4907,13 @@ function CreditPage({ businessId, staff, refresh }) {
   const totalDebt = filtered.reduce((a,x)=>a+number(x.balance),0);
   const totalOriginal = filtered.reduce((a,x)=>a+number(x.original_amount),0);
   const totalPaid = filtered.reduce((a,x)=>a+number(x.paid_amount),0);
+  const overdueCount = filtered.filter(x => number(x.balance) > 0 && x.due_date && new Date(`${x.due_date}T23:59:59`) < new Date()).length;
+
+  function creditStatus(row) {
+    if (number(row.balance) <= 0) return "PAID";
+    if (row.due_date && new Date(`${row.due_date}T23:59:59`) < new Date()) return "OVERDUE";
+    return row.status || "UNPAID";
+  }
 
   return <div>
     <PageTitle title="Madeni / Credit" subtitle="Simamia bidhaa na huduma zilizochukuliwa kwa mkopo." />
@@ -4106,6 +4922,7 @@ function CreditPage({ businessId, staff, refresh }) {
       <StatCard title="Jumla ya Mikopo" value={money(totalOriginal)} icon="📒" tone="blue" />
       <StatCard title="Yaliyolipwa" value={money(totalPaid)} icon="✓" tone="green" />
       <StatCard title="Wadaiwa" value={filtered.filter(x=>number(x.balance)>0).length} icon="👥" tone="orange" />
+      <StatCard title="Overdue" value={overdueCount} icon="⏰" tone="red" />
     </div>
     <div className="panel">
       <div className="panel-header"><div><h3>Ongeza Deni</h3><span>Weka mteja, product/service, kiasi alicholipa na tarehe ya mwisho.</span></div></div>
@@ -4123,9 +4940,9 @@ function CreditPage({ businessId, staff, refresh }) {
       </form>
     </div>
     <div className="panel">
-      <div className="toolbar"><input className="search-input" value={search} onChange={e=>setSearch(e.target.value)} placeholder="Tafuta mteja..." /></div>
+      <div className="toolbar"><input className="search-input" value={search} onChange={e=>setSearch(e.target.value)} placeholder="Tafuta mteja..." /><button className="secondary-btn small-btn" onClick={() => exportToExcel(filtered.map(x=>({Customer:x.customer_name,Phone:x.customer_phone||"",Item:itemName(x),Original:x.original_amount,Paid:x.paid_amount,Balance:x.balance,"Due Date":x.due_date||"",Status:creditStatus(x)})), `Bless-Stationery-Credits-${todayDateInput()}.xlsx`, "Credits")}>⬇ Export</button></div>
       <div className="table-wrap"><table><thead><tr><th>Mteja</th><th>Product/Service</th><th>Deni</th><th>Amelipa</th><th>Salio</th><th>Due Date</th><th>Status</th><th>Action</th></tr></thead><tbody>
-        {filtered.map(x=><tr key={x.id}><td><strong>{x.customer_name}</strong><br/><small>{x.customer_phone || "-"}</small></td><td>{itemName(x)}</td><td>{money(x.original_amount)}</td><td>{money(x.paid_amount)}</td><td><strong>{money(x.balance)}</strong></td><td>{x.due_date || "-"}</td><td>{x.status}</td><td>{number(x.balance)>0 && <div style={{display:"flex",gap:6,flexWrap:"wrap"}}>{paying===x.id ? <><input type="number" value={paymentAmount} onChange={e=>setPaymentAmount(e.target.value)} placeholder="Kiasi" /><button className="primary-btn" onClick={()=>payDebt(x)}>Lipa</button><button className="secondary-btn" onClick={()=>setPaying(null)}>X</button></> : <button className="secondary-btn" onClick={()=>setPaying(x.id)}>+ Malipo</button>}<button className="secondary-btn" onClick={()=>sendReminder(x)}>📲 Kumbusha</button></div>}</td></tr>)}
+        {filtered.map(x=><tr key={x.id}><td><strong>{x.customer_name}</strong><br/><small>{x.customer_phone || "-"}</small></td><td>{itemName(x)}</td><td>{money(x.original_amount)}</td><td>{money(x.paid_amount)}</td><td><strong>{money(x.balance)}</strong></td><td>{x.due_date || "-"}</td><td><span className={`status-chip ${creditStatus(x).toLowerCase()}`}>{creditStatus(x)}</span></td><td>{number(x.balance)>0 && <div style={{display:"flex",gap:6,flexWrap:"wrap"}}>{paying===x.id ? <><input type="number" value={paymentAmount} onChange={e=>setPaymentAmount(e.target.value)} placeholder="Kiasi" /><button className="primary-btn" onClick={()=>payDebt(x)}>Lipa</button><button className="secondary-btn" onClick={()=>setPaying(null)}>X</button></> : <button className="secondary-btn" onClick={()=>setPaying(x.id)}>+ Malipo</button>}<button className="secondary-btn" onClick={()=>sendReminder(x)}>📲 Kumbusha</button></div>}</td></tr>)}
         {!filtered.length && <tr><td colSpan="8">Hakuna madeni yaliyopatikana.</td></tr>}
       </tbody></table></div>
     </div>
@@ -4170,9 +4987,9 @@ function AttendancePage({ businessId, staff, refresh }) {
   function worked(v1,v2){if(!v1||!v2)return "-";return `${Math.floor((new Date(v2)-new Date(v1))/3600000)}h ${Math.floor(((new Date(v2)-new Date(v1))%3600000)/60000)}m`}
   return <div>
     <PageTitle title="Staff Attendance" subtitle="Staff wana-sign in/out; muda unachukuliwa automatically na mfumo." />
-    <div className="stats-grid"><StatCard title="Kuingia" value="08:30" icon="🌅" tone="blue" /><StatCard title="Kutoka" value="21:30" icon="🌙" tone="purple" /><StatCard title="Present" value={attendance.length} icon="✓" tone="green" /><StatCard title="Absent" value={attendance.length} icon="◷" tone="red" /></div>
+    <div className="stats-grid"><StatCard title="Kuingia" value="08:30" icon="🌅" tone="blue" /><StatCard title="Kutoka" value="21:30" icon="🌙" tone="purple" /><StatCard title="Present" value={attendance.filter(a=>!!a.check_in_at).length} icon="✓" tone="green" /><StatCard title="Absent" value={Math.max(0, staffRows.filter(s=>!attendance.some(a=>a.staff_id===s.id)).length)} icon="◷" tone="red" /></div>
     {staff?.active && <div className="panel"><div className="panel-header"><div><h3>{staff.staff_name} — Leo</h3><span>System time ndiyo unaotumika; staff haandiki muda.</span></div><div style={{display:"flex",gap:8}}><button className="primary-btn" disabled={busy||!!todayRecord} onClick={checkIn}>✓ SIGN IN</button><button className="secondary-btn" disabled={busy||!todayRecord||!!todayRecord.check_out_at} onClick={checkOut}>↪ SIGN OUT</button></div></div>{todayRecord&&<div className="notice">Kuingia: <strong>{localTime(todayRecord.check_in_at)}</strong> · Kutoka: <strong>{localTime(todayRecord.check_out_at)}</strong> · Late: <strong>{minutesLate(todayRecord.check_in_at)} min</strong></div>}</div>}
-    <div className="panel"><div className="toolbar"><input type="date" value={date} onChange={e=>setDate(e.target.value)} /></div><div className="table-wrap"><table><thead><tr><th>Staff</th><th>Kuingia</th><th>Kutoka</th><th>Late</th><th>Working Hours</th><th>Status</th></tr></thead><tbody>{staffRows.map(s=>{const a=attendance.find(x=>x.staff_id===s.id);return <tr key={s.id}><td><strong>{s.staff_name}</strong></td><td>{localTime(a?.check_in_at)}</td><td>{localTime(a?.check_out_at)}</td><td>{a?`${minutesLate(a.check_in_at)} min`:"-"}</td><td>{worked(a?.check_in_at,a?.check_out_at)}</td><td>{a?(a.check_out_at?"PRESENT":"IN WORK"):"ABSENT"}</td></tr>})}</tbody></table></div></div>
+    <div className="panel"><div className="toolbar"><input type="date" value={date} onChange={e=>setDate(e.target.value)} /></div><div className="table-wrap"><table><thead><tr><th>Staff</th><th>Kuingia</th><th>Kutoka</th><th>Late</th><th>Working Hours</th><th>Status</th></tr></thead><tbody>{staffRows.map(s=>{const a=attendance.find(x=>x.staff_id===s.id);return <tr key={s.id}><td><strong>{s.staff_name}</strong></td><td>{localTime(a?.check_in_at)}</td><td>{localTime(a?.check_out_at)}</td><td>{a?`${minutesLate(a.check_in_at)} min`:"-"}</td><td>{worked(a?.check_in_at,a?.check_out_at)}</td><td>{a?(a.check_out_at?(minutesLate(a.check_in_at)>0?"LATE":"PRESENT"):"IN WORK"):"ABSENT"}</td></tr>})}</tbody></table></div></div>
   </div>;
 }
 
@@ -4413,6 +5230,255 @@ function StaffPage({ businessId, refresh }) {
   );
 }
 
+function BusinessSettingsPage({ businessId, business, user, theme, setTheme, density, setDensity, onChanged }) {
+  const [form, setForm] = useState({
+    business_name: business?.business_name || "",
+    phone: business?.phone || "",
+    email: business?.email || "",
+    address: business?.address || "",
+    logo_url: business?.logo_url || "",
+  });
+  const [busy, setBusy] = useState(false);
+  const [passwordBusy, setPasswordBusy] = useState(false);
+  const [passwordMessage, setPasswordMessage] = useState("");
+  const [passwordError, setPasswordError] = useState("");
+  const [currentPassword, setCurrentPassword] = useState("");
+  const [newPassword, setNewPassword] = useState("");
+  const [confirmNewPassword, setConfirmNewPassword] = useState("");
+  const [showCurrent, setShowCurrent] = useState(false);
+  const [showNew, setShowNew] = useState(false);
+  const [showConfirm, setShowConfirm] = useState(false);
+
+  useEffect(() => {
+    setForm({
+      business_name: business?.business_name || "",
+      phone: business?.phone || "",
+      email: business?.email || "",
+      address: business?.address || "",
+      logo_url: business?.logo_url || "",
+    });
+  }, [business]);
+
+  async function save(e) {
+    e.preventDefault();
+    if (!form.business_name.trim()) {
+      alert("Weka jina la biashara.");
+      return;
+    }
+    setBusy(true);
+    const { error } = await supabase
+      .from("businesses")
+      .update({
+        business_name: form.business_name.trim(),
+        phone: form.phone.trim() || null,
+        email: form.email.trim() || null,
+        address: form.address.trim() || null,
+        logo_url: form.logo_url.trim() || null,
+      })
+      .eq("id", businessId);
+
+    if (error) alert(error.message);
+    else {
+      alert("Business profile imehifadhiwa.");
+      onChanged();
+    }
+    setBusy(false);
+  }
+
+  function chooseTheme(value) {
+    setTheme(value);
+  }
+
+  async function changePassword(e) {
+    e.preventDefault();
+    setPasswordError("");
+    setPasswordMessage("");
+
+    if (!currentPassword) {
+      setPasswordError("Weka password yako ya sasa.");
+      return;
+    }
+    if (newPassword.length < 6) {
+      setPasswordError("Password mpya lazima iwe na angalau characters 6.");
+      return;
+    }
+    if (newPassword !== confirmNewPassword) {
+      setPasswordError("Password mpya hazifanani.");
+      return;
+    }
+    if (newPassword === currentPassword) {
+      setPasswordError("Password mpya iwe tofauti na ya sasa.");
+      return;
+    }
+
+    setPasswordBusy(true);
+    try {
+      const { error: verifyError } = await supabase.auth.signInWithPassword({
+        email: user?.email || "",
+        password: currentPassword,
+      });
+
+      if (verifyError) {
+        setPasswordError("Password ya sasa sio sahihi.");
+        return;
+      }
+
+      const { error: updateError } = await supabase.auth.updateUser({
+        password: newPassword,
+      });
+
+      if (updateError) throw updateError;
+
+      setCurrentPassword("");
+      setNewPassword("");
+      setConfirmNewPassword("");
+      setPasswordMessage("Password imebadilishwa kikamilifu.");
+    } catch (err) {
+      console.error("Password change failed:", err);
+      setPasswordError(err?.message || "Imeshindikana kubadilisha password.");
+    } finally {
+      setPasswordBusy(false);
+    }
+  }
+
+  const themeOptions = [
+    { id: "ocean", name: "Ocean Blue", desc: "Blue + Teal", color: "#0f3d5e", accent: "#0ea5a4" },
+    { id: "emerald", name: "Emerald", desc: "Green + Teal", color: "#064e3b", accent: "#10b981" },
+    { id: "purple", name: "Royal Purple", desc: "Purple + Violet", color: "#3b1f6f", accent: "#8b5cf6" },
+    { id: "slate", name: "Slate", desc: "Dark Slate + Cyan", color: "#172033", accent: "#06b6d4" },
+    { id: "rose", name: "Rose", desc: "Wine + Rose", color: "#5f172b", accent: "#e11d48" },
+  ];
+
+  return (
+    <div>
+      <PageTitle title="Settings" subtitle="Dhibiti taarifa za biashara, mwonekano wa mfumo na usalama wa account yako." />
+
+      <div className="settings-grid">
+        <div className="panel">
+          <div className="panel-header">
+            <div>
+              <h3>Business Profile</h3>
+              <span>Taarifa hizi zinatumika kwenye mfumo na receipt.</span>
+            </div>
+          </div>
+          <form onSubmit={save} className="form-grid">
+            <Field label="Business Name" value={form.business_name} onChange={v => setForm({...form,business_name:v})} required />
+            <Field label="Phone" value={form.phone} onChange={v => setForm({...form,phone:v})} />
+            <Field label="Email" type="email" value={form.email} onChange={v => setForm({...form,email:v})} />
+            <Field label="Address" value={form.address} onChange={v => setForm({...form,address:v})} />
+            <Field label="Logo URL" value={form.logo_url} onChange={v => setForm({...form,logo_url:v})} placeholder="Optional" />
+            <div className="notice full">💡 Jina, simu, address na logo vinaweza kuonekana kwenye receipt kulingana na layout ya receipt.</div>
+            <div className="form-actions full"><button className="primary-btn" disabled={busy}>{busy ? "Inahifadhi..." : "Save Business Profile"}</button></div>
+          </form>
+        </div>
+
+        <div className="panel settings-preview">
+          <div className="panel-kicker">RECEIPT PREVIEW</div>
+          <div className="settings-logo">{form.logo_url ? <img src={form.logo_url} alt="" /> : <div className="receipt-logo">B</div>}</div>
+          <h2>{form.business_name || "Bless Stationery"}</h2>
+          <p>{form.address || "Business address"}</p>
+          <p>{form.phone || "Phone number"}</p>
+          <p>{form.email || "Email"}</p>
+        </div>
+      </div>
+
+      <div className="settings-section-title">
+        <div>
+          <h2>🎨 Mwonekano wa Mfumo</h2>
+          <p>Chagua rangi ambayo biashara yako itatumia kwenye dashboard, menus na buttons.</p>
+        </div>
+      </div>
+
+      <div className="theme-grid">
+        {themeOptions.map((item) => (
+          <button
+            type="button"
+            key={item.id}
+            className={`theme-card ${theme === item.id ? "selected" : ""}`}
+            onClick={() => chooseTheme(item.id)}
+          >
+            <div className="theme-preview" style={{ "--preview-main": item.color, "--preview-accent": item.accent }}>
+              <span></span><span></span><span></span>
+            </div>
+            <div className="theme-card-copy">
+              <strong>{item.name}</strong>
+              <small>{item.desc}</small>
+            </div>
+            <div className="theme-check">{theme === item.id ? "✓" : ""}</div>
+          </button>
+        ))}
+      </div>
+
+      <div className="settings-grid settings-grid-bottom">
+        <div className="panel">
+          <div className="panel-header">
+            <div>
+              <h3>🖥 Display Preferences</h3>
+              <span>Mipangilio hii inahifadhiwa kwenye browser ya kifaa hiki.</span>
+            </div>
+          </div>
+          <div className="preference-row">
+            <div>
+              <strong>Density ya mfumo</strong>
+              <p>Chagua kama tables na cards ziwe compact au ziwe na nafasi zaidi.</p>
+            </div>
+            <div className="segmented-control">
+              <button type="button" className={density === "comfortable" ? "active" : ""} onClick={() => setDensity("comfortable")}>Comfortable</button>
+              <button type="button" className={density === "compact" ? "active" : ""} onClick={() => setDensity("compact")}>Compact</button>
+            </div>
+          </div>
+          <div className="notice">ℹ️ Theme na density ni za account hii kwenye browser hii; database yako haihitaji kubadilishwa.</div>
+        </div>
+
+        <div className="panel">
+          <div className="panel-header">
+            <div>
+              <h3>🔐 Account Security</h3>
+              <span>Email ya account: <strong>{user?.email || "-"}</strong></span>
+            </div>
+          </div>
+          {passwordError && <div className="error-box">{passwordError}</div>}
+          {passwordMessage && <div className="success-box">{passwordMessage}</div>}
+          <form onSubmit={changePassword} className="password-settings-form">
+            <PasswordField label="Password ya sasa" value={currentPassword} onChange={setCurrentPassword} show={showCurrent} setShow={setShowCurrent} />
+            <PasswordField label="Password mpya" value={newPassword} onChange={setNewPassword} show={showNew} setShow={setShowNew} />
+            <PasswordField label="Confirm password mpya" value={confirmNewPassword} onChange={setConfirmNewPassword} show={showConfirm} setShow={setShowConfirm} />
+            <div className="password-hint">Password lazima iwe na angalau characters 6. Tunathibitisha password yako ya sasa kabla ya kuweka mpya.</div>
+            <button className="primary-btn" disabled={passwordBusy} type="submit">{passwordBusy ? "Inabadilisha..." : "Badilisha Password"}</button>
+          </form>
+        </div>
+      </div>
+
+      <div className="panel settings-help-panel">
+        <div className="panel-header">
+          <div>
+            <h3>⚙️ Mipangilio mingine muhimu</h3>
+            <span>Sehemu ambazo tunaweza kuongeza baadaye bila kubadilisha mfumo wa msingi.</span>
+          </div>
+        </div>
+        <div className="settings-help-grid">
+          <div><strong>Receipt Settings</strong><span>80mm / A4, footer message, logo na receipt notes.</span></div>
+          <div><strong>Business Defaults</strong><span>Default payment method, tax/VAT display na invoice numbering.</span></div>
+          <div><strong>Security</strong><span>Session control, logout other devices na role permissions.</span></div>
+          <div><strong>Notifications</strong><span>Low-stock threshold, reminders na in-app alerts.</span></div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function PasswordField({ label, value, onChange, show, setShow }) {
+  return (
+    <div className="field password-settings-field">
+      <label>{label}</label>
+      <div className="password-wrap">
+        <input type={show ? "text" : "password"} value={value} onChange={(e) => onChange(e.target.value)} required />
+        <button type="button" className="show-password" onClick={() => setShow(!show)}>{show ? "Ficha" : "Onyesha"}</button>
+      </div>
+    </div>
+  );
+}
+
 function PageTitle({ title, subtitle, button, onClick }) {
   return (
     <div className="page-title">
@@ -4484,6 +5550,14 @@ const CSS = `
 * {
   box-sizing: border-box;
 }
+
+.bless-welcome-backdrop{position:fixed;inset:0;z-index:9999;display:grid;place-items:center;padding:24px;background:rgba(4,9,18,.78);backdrop-filter:blur(18px);animation:blessFade .35s ease}
+.bless-welcome-card{position:relative;width:min(720px,94vw);overflow:hidden;border:1px solid rgba(255,255,255,.16);border-radius:30px;padding:46px;background:linear-gradient(145deg,rgba(20,31,56,.98),rgba(8,14,28,.98));box-shadow:0 35px 100px rgba(0,0,0,.55);color:#fff;text-align:center;animation:blessPop .5s cubic-bezier(.2,.9,.2,1)}
+.bless-welcome-logo{width:74px;height:74px;margin:0 auto 14px;display:grid;place-items:center;border-radius:22px;font-size:36px;font-weight:900;background:linear-gradient(135deg,#5eead4,#60a5fa);color:#07111f;box-shadow:0 15px 45px rgba(96,165,250,.35)}
+.bless-welcome-kicker{font-size:11px;letter-spacing:4px;font-weight:800;opacity:.68}.bless-welcome-card h1{margin:10px 0 8px;font-size:38px;line-height:1.05}.bless-welcome-sub{margin:0 auto 26px;color:rgba(255,255,255,.72);font-size:15px}.bless-pulse-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin:20px 0 26px}.bless-pulse-grid div{padding:15px 10px;border:1px solid rgba(255,255,255,.09);background:rgba(255,255,255,.055);border-radius:17px}.bless-pulse-grid span{display:block;font-size:9px;letter-spacing:1.5px;opacity:.55}.bless-pulse-grid strong{display:block;margin-top:7px;font-size:14px}.bless-enter-btn{width:100%;padding:15px 18px;border:0;border-radius:16px;background:#fff;color:#07111f;font-weight:900;letter-spacing:.6px;cursor:pointer;transition:.2s}.bless-enter-btn:hover{transform:translateY(-2px);box-shadow:0 12px 30px rgba(255,255,255,.12)}.bless-enter-btn span{float:right;font-size:20px}.bless-welcome-card small{display:block;margin-top:16px;opacity:.45}.bless-welcome-card kbd,.bless-command kbd{padding:3px 7px;border-radius:6px;background:rgba(255,255,255,.1);border:1px solid rgba(255,255,255,.12);font-family:inherit}.bless-welcome-orbit{position:absolute;width:220px;height:220px;border:1px solid rgba(96,165,250,.16);border-radius:50%;right:-120px;top:-120px}.bless-welcome-orbit.two{width:160px;height:160px;left:-90px;bottom:-80px;border-color:rgba(94,234,212,.13)}
+.bless-command-backdrop{position:fixed;inset:0;z-index:9998;background:rgba(2,6,14,.62);backdrop-filter:blur(12px);display:flex;justify-content:center;align-items:flex-start;padding:10vh 20px}.bless-command{width:min(700px,96vw);border:1px solid rgba(255,255,255,.13);border-radius:24px;background:var(--panel-bg,#111827);box-shadow:0 30px 90px rgba(0,0,0,.5);overflow:hidden;animation:blessPop .25s ease}.bless-command-head{display:flex;justify-content:space-between;align-items:center;padding:22px 24px 12px}.bless-command-head span{font-size:10px;letter-spacing:2px;opacity:.5}.bless-command-head h3{margin:5px 0 0}.bless-command-head button{border:0;background:transparent;font-size:28px;opacity:.6;cursor:pointer}.bless-command-search{margin:0 20px 16px;padding:13px 15px;border:1px solid rgba(128,128,128,.2);border-radius:12px;display:flex;gap:10px;align-items:center;opacity:.72}.bless-command-search span{flex:1}.bless-command-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:10px;padding:0 20px 22px}.bless-command-grid button{display:grid;grid-template-columns:28px 1fr 18px;align-items:center;gap:8px;text-align:left;padding:14px;border:1px solid rgba(128,128,128,.16);border-radius:14px;background:rgba(128,128,128,.06);cursor:pointer;color:inherit}.bless-command-grid button:hover{transform:translateY(-2px);border-color:rgba(96,165,250,.45);background:rgba(96,165,250,.09)}.bless-command-grid span{font-size:18px}.bless-command-grid strong{font-size:12px}.bless-command-grid em{opacity:.4}.bless-floating-command{position:fixed;right:22px;bottom:22px;z-index:1200;width:54px;height:54px;border-radius:18px;border:1px solid rgba(255,255,255,.16);background:linear-gradient(145deg,#17233d,#0c1426);color:#fff;box-shadow:0 12px 35px rgba(0,0,0,.28);cursor:pointer;display:grid;place-items:center}.bless-floating-command span{font-size:22px}.bless-floating-command small{font-size:7px;opacity:.55;position:absolute;bottom:5px}.bless-floating-command:hover{transform:translateY(-3px)}
+@keyframes blessFade{from{opacity:0}to{opacity:1}}@keyframes blessPop{from{opacity:0;transform:translateY(18px) scale(.97)}to{opacity:1;transform:none}}
+
 
 html,
 body,
@@ -4613,8 +5687,9 @@ button {
 }
 
 .login-tabs button.active {
-  background: white;
+  background: linear-gradient(135deg, #ffffff 0%, #eaf3ff 100%);
   color: #1262dc;
+  box-shadow: 0 8px 22px rgba(0,0,0,.12);
   box-shadow: 0 2px 8px rgba(10, 30, 70, .08);
 }
 
@@ -4871,10 +5946,11 @@ button {
 .sidebar {
   width: 255px;
   flex-shrink: 0;
-  background: #071b38;
+  background: linear-gradient(180deg, #061a35 0%, #0b2345 100%);
   color: white;
   min-height: 100vh;
-  padding: 20px 14px;
+  padding: 22px 14px;
+  box-shadow: 8px 0 28px rgba(7,27,56,.10);
   display: flex;
   flex-direction: column;
 }
@@ -5160,6 +6236,18 @@ button {
   padding: 20px;
   margin-bottom: 18px;
   box-shadow: 0 3px 14px rgba(30,50,80,.025);
+}
+
+.panel-header-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.small-btn {
+  padding: 8px 12px;
+  font-size: 12px;
 }
 
 .panel-header {
@@ -6221,6 +7309,414 @@ td strong {
 .subscription-gate-actions {
   margin-top: 24px;
 }
+
+/* Dashboard polish layer */
+.content { max-width: 1600px; margin: 0 auto; width: 100%; }
+.welcome { position: relative; overflow: hidden; border: 1px solid #e7eef8; box-shadow: 0 14px 40px rgba(15, 42, 78, .07); }
+.welcome::after { content: ""; position: absolute; width: 220px; height: 220px; border-radius: 50%; right: -70px; top: -100px; background: rgba(18,98,220,.08); pointer-events: none; }
+.stats-grid { gap: 16px; }
+.stat-card { border: 1px solid #e8eef6; box-shadow: 0 10px 28px rgba(15,42,78,.055); transition: transform .18s ease, box-shadow .18s ease; }
+.stat-card:hover { transform: translateY(-3px); box-shadow: 0 16px 34px rgba(15,42,78,.10); }
+.panel, .table-wrap, .form-card, .chart-card { border: 1px solid #e7edf6; box-shadow: 0 10px 30px rgba(15,42,78,.055); }
+.primary-btn, .secondary-btn, .refresh-btn, button { transition: transform .15s ease, box-shadow .15s ease, opacity .15s ease; }
+.primary-btn:hover, .secondary-btn:hover, .refresh-btn:hover { transform: translateY(-1px); }
+.topbar { backdrop-filter: blur(12px); box-shadow: 0 1px 0 rgba(15,42,78,.06); }
+@media (max-width: 900px) {
+  .content { padding-bottom: 28px; }
+  .welcome { border-radius: 18px; }
+}
+
+
+/* Final quality layer */
+.toolbar-actions{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+.row-actions{display:flex;gap:6px;align-items:center;flex-wrap:wrap}
+.settings-grid{display:grid;grid-template-columns:minmax(0,1.4fr) minmax(280px,.8fr);gap:18px}
+.settings-preview{text-align:center;display:flex;flex-direction:column;align-items:center;justify-content:center;min-height:320px}
+.settings-preview h2{margin:14px 0 4px}
+.settings-preview p{margin:3px 0;color:#667085}
+.settings-logo img{width:72px;height:72px;object-fit:contain;border-radius:14px;border:1px solid #e5e7eb}
+.status-chip.overdue{background:#fff1f0;color:#b42318}
+.status-chip.paid{background:#ecfdf3;color:#027a48}
+.status-chip.partial{background:#fffaeb;color:#b54708}
+.status-chip.unpaid{background:#f2f4f7;color:#344054}
+.search-box input{min-width:150px}
+input:focus,select:focus{outline:none;border-color:#1262dc;box-shadow:0 0 0 3px rgba(18,98,220,.10)}
+button:disabled{cursor:not-allowed;opacity:.55;transform:none!important}
+.table-wrap{overflow-x:auto}
+.table-wrap table{min-width:760px}
+.mini-row{transition:background .15s ease}
+.mini-row:hover{background:#f8fbff}
+.notice{border-radius:12px}
+@media (max-width:900px){
+  .settings-grid{grid-template-columns:1fr}
+  .toolbar-actions{width:100%}
+  .toolbar-actions select,.toolbar-actions button{flex:0 0 auto}
+}
+@media print{
+  .sidebar,.topbar,.no-print,.mobile-overlay{display:none!important}
+  .main-area{margin:0!important}
+  .content{max-width:none!important;padding:0!important}
+}
+
+/* ===== BLESS STATIONERY DISPLAY / UI MASTER POLISH ===== */
+:root{
+  --bs-primary:#1262dc;
+  --bs-primary-dark:#0b4fb8;
+  --bs-navy:#071d3d;
+  --bs-bg:#f6f8fc;
+  --bs-card:#ffffff;
+  --bs-border:#e6ebf2;
+  --bs-text:#172033;
+  --bs-muted:#738198;
+  --bs-success:#079455;
+  --bs-warning:#d98b00;
+  --bs-danger:#d92d20;
+  --bs-radius:16px;
+  --bs-shadow:0 10px 30px rgba(16,38,72,.06);
+}
+
+body{
+  background:
+    radial-gradient(circle at 90% 0%,rgba(18,98,220,.055),transparent 28%),
+    var(--bs-bg);
+  color:var(--bs-text);
+  -webkit-font-smoothing:antialiased;
+}
+
+*{scrollbar-width:thin;scrollbar-color:#c7d1df transparent}
+*::-webkit-scrollbar{width:8px;height:8px}
+*::-webkit-scrollbar-thumb{background:#c7d1df;border-radius:99px}
+*::-webkit-scrollbar-track{background:transparent}
+
+.app-shell{background:var(--bs-bg)}
+.sidebar{
+  position:sticky;
+  top:0;
+  height:100vh;
+  overflow-y:auto;
+  border-right:1px solid rgba(255,255,255,.04);
+  box-shadow:12px 0 35px rgba(7,29,61,.08);
+}
+.sidebar-brand{position:sticky;top:0;z-index:2;background:linear-gradient(180deg,#061a35 0%,#061a35 82%,rgba(6,26,53,0) 100%)}
+.nav-button{font-size:13px;transition:background .18s ease,color .18s ease,transform .18s ease}
+.nav-button:hover{transform:translateX(2px)}
+.nav-button.active{box-shadow:0 8px 18px rgba(18,98,220,.22)}
+
+.main-area{background:var(--bs-bg)}
+.topbar{
+  position:sticky;
+  top:0;
+  z-index:20;
+  background:rgba(255,255,255,.92);
+}
+.topbar strong{letter-spacing:-.2px}
+.content{padding:30px;max-width:1680px}
+
+.welcome{
+  background:linear-gradient(135deg,#fff 0%,#f5f9ff 100%);
+  border-radius:20px;
+  padding:24px;
+  min-height:118px;
+}
+.welcome h1,.page-title h1{letter-spacing:-.6px}
+.page-title{padding-bottom:4px}
+
+.stats-grid{grid-template-columns:repeat(4,minmax(0,1fr))}
+.stat-card{
+  position:relative;
+  overflow:hidden;
+  min-width:0;
+  border-radius:18px;
+  background:rgba(255,255,255,.96);
+}
+.stat-card::after{
+  content:"";
+  position:absolute;
+  right:-35px;
+  bottom:-45px;
+  width:120px;
+  height:120px;
+  border-radius:50%;
+  background:rgba(18,98,220,.035);
+}
+.stat-card strong{font-size:22px;letter-spacing:-.35px}
+.stat-title{text-transform:none}
+.stat-icon{position:relative;z-index:1;box-shadow:0 5px 14px rgba(18,98,220,.08)}
+
+.panel,.table-wrap,.form-card,.chart-card{
+  border-radius:18px;
+  box-shadow:var(--bs-shadow);
+  background:var(--bs-card);
+}
+.panel{padding:21px}
+.panel-header{align-items:flex-start}
+.panel-header h3{letter-spacing:-.15px}
+
+.form-panel{border-radius:18px}
+.form-grid{align-items:end}
+.field label{color:#344054}
+.field input,.field select,.login-card input,.login-card select{
+  min-height:45px;
+  transition:border-color .16s ease,box-shadow .16s ease,background .16s ease;
+}
+.field input:hover,.field select:hover{border-color:#bcc8d8}
+input::placeholder{color:#a0aabc}
+
+.primary-btn,.secondary-btn,.refresh-btn,.small-btn,.login-btn{
+  transition:transform .16s ease,box-shadow .16s ease,background .16s ease,border-color .16s ease;
+}
+.primary-btn:hover{box-shadow:0 9px 22px rgba(18,98,220,.22)}
+.primary-btn:active,.secondary-btn:active,.refresh-btn:active{transform:translateY(0) scale(.98)}
+.secondary-btn{border:1px solid #d9e1ec}
+.secondary-btn:hover{background:#f7f9fc;border-color:#c5cfdd}
+.text-btn{border-radius:8px;padding:7px 9px}
+.text-btn:hover{background:#edf4ff}
+
+.toolbar{
+  background:#fff;
+  border:1px solid var(--bs-border);
+  border-radius:16px;
+  padding:12px;
+  box-shadow:0 6px 20px rgba(16,38,72,.035);
+}
+.toolbar .search-box{background:#fff}
+.toolbar-actions{gap:8px}
+
+.table-wrap{
+  border:1px solid var(--bs-border);
+  overflow:auto;
+}
+.table-wrap table{
+  width:100%;
+  border-collapse:separate;
+  border-spacing:0;
+}
+.table-wrap thead th{
+  position:sticky;
+  top:0;
+  z-index:1;
+  background:#f8fafc;
+  color:#667085;
+  font-size:11px;
+  text-transform:uppercase;
+  letter-spacing:.45px;
+  white-space:nowrap;
+}
+.table-wrap tbody td{
+  background:#fff;
+  border-bottom:1px solid #eef1f5;
+  vertical-align:middle;
+}
+.table-wrap tbody tr:last-child td{border-bottom:0}
+.table-wrap tbody tr:hover td{background:#fbfdff}
+.row-actions button{white-space:nowrap}
+
+.status-chip{
+  display:inline-flex;
+  align-items:center;
+  justify-content:center;
+  gap:5px;
+  min-height:25px;
+  padding:4px 9px;
+  border-radius:999px;
+  font-size:11px;
+  font-weight:800;
+  border:1px solid transparent;
+}
+
+.notice,.error-box,.success-box{
+  box-shadow:0 5px 16px rgba(16,38,72,.035);
+}
+
+.modal-backdrop,.modal-overlay{
+  backdrop-filter:blur(4px);
+}
+.modal,.modal-card,.dialog{
+  border-radius:20px!important;
+  box-shadow:0 24px 70px rgba(7,29,61,.20)!important;
+  border:1px solid #e5eaf1!important;
+}
+
+.empty-state{
+  padding:42px 20px;
+  text-align:center;
+  color:#7b8799;
+}
+.empty-state strong{display:block;color:#344054;margin-bottom:5px}
+.empty-state p{margin:0;font-size:13px}
+
+.loading-screen{
+  background:
+    radial-gradient(circle at 20% 20%,rgba(255,255,255,.08),transparent 30%),
+    linear-gradient(145deg,#061a35,#1262dc);
+}
+.loading-box{background:rgba(255,255,255,.07);padding:36px;border-radius:24px;backdrop-filter:blur(10px)}
+
+.login-page{background:#f6f8fc}
+.login-brand{
+  position:relative;
+  overflow:hidden;
+  background:
+    radial-gradient(circle at 85% 15%,rgba(66,145,255,.22),transparent 30%),
+    linear-gradient(145deg,#061a35,#0b57c7);
+}
+.login-brand::after{
+  content:"";
+  position:absolute;
+  width:360px;height:360px;
+  border-radius:50%;
+  right:-150px;bottom:-160px;
+  border:55px solid rgba(255,255,255,.045);
+}
+.login-card{border:1px solid #e6ebf2}
+.login-card h2{letter-spacing:-.7px}
+
+.quick-actions{flex-wrap:wrap}
+.panel-header-actions{justify-content:flex-end}
+
+.mobile-menu-btn{
+  box-shadow:0 4px 12px rgba(16,38,72,.08);
+}
+.mobile-overlay{
+  backdrop-filter:blur(3px);
+}
+
+@media (max-width:1200px){
+  .stats-grid{grid-template-columns:repeat(2,minmax(0,1fr))}
+  .dashboard-grid{grid-template-columns:1fr}
+  .form-grid{grid-template-columns:repeat(2,minmax(0,1fr))}
+  .content{padding:24px}
+}
+@media (max-width:900px){
+  .app-shell{display:block}
+  .sidebar{
+    position:fixed;
+    left:0;
+    top:0;
+    z-index:100;
+    width:280px;
+    transform:translateX(-105%);
+    transition:transform .22s ease;
+    box-shadow:18px 0 45px rgba(7,29,61,.25);
+  }
+  .sidebar.open{transform:translateX(0)}
+  .main-area{width:100%}
+  .topbar{
+    height:64px;
+    padding:0 14px;
+  }
+  .mobile-menu-btn{display:inline-flex}
+  .topbar-date{display:none}
+  .topbar strong{font-size:15px}
+  .content{padding:18px 14px 28px}
+  .welcome,.page-title{align-items:flex-start;flex-direction:column}
+  .welcome{padding:19px}
+  .welcome h1,.page-title h1{font-size:23px}
+  .quick-actions{width:100%}
+  .quick-actions button{flex:1 1 auto}
+  .stats-grid{grid-template-columns:1fr 1fr;gap:11px}
+  .stat-card{min-height:115px;padding:15px}
+  .stat-card strong{font-size:18px}
+  .stat-icon{width:40px;height:40px}
+  .toolbar{align-items:stretch;flex-direction:column}
+  .toolbar .search-box{width:100%}
+  .toolbar-actions{width:100%}
+  .toolbar-actions>*{flex:1 1 auto}
+  .form-grid{grid-template-columns:1fr}
+  .full{grid-column:auto}
+  .settings-grid{grid-template-columns:1fr}
+  .panel{padding:16px}
+}
+@media (max-width:620px){
+  .login-page{display:block}
+  .login-brand{display:none}
+  .login-side{min-height:100vh;padding:16px}
+  .login-card{padding:25px 19px;border-radius:20px}
+  .mobile-logo{display:flex;margin:0 auto 15px}
+  .plan-grid{grid-template-columns:1fr}
+  .stats-grid{grid-template-columns:1fr}
+  .stat-card{min-height:100px}
+  .top-actions .refresh-btn{display:none}
+  .user-pill{max-width:135px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .panel-header{flex-direction:column}
+  .panel-header-actions{width:100%;justify-content:flex-start}
+  .panel-header-actions button{flex:1 1 auto}
+  .report-toolbar{align-items:stretch;flex-direction:column}
+  .report-toolbar>*{width:100%}
+  .search-box{width:100%}
+  .content{padding-left:10px;padding-right:10px}
+  .table-wrap{margin-left:-2px;margin-right:-2px;border-radius:14px}
+}
+@media print{
+  body{background:#fff!important}
+  .sidebar,.topbar,.mobile-overlay,.mobile-menu-btn,.no-print{display:none!important}
+  .main-area{margin:0!important;width:100%!important}
+  .content{max-width:none!important;padding:0!important}
+  .panel,.table-wrap{box-shadow:none!important;border:1px solid #ddd!important}
+}
+
+
+/* Settings, themes and account security */
+.app-shell{
+  --brand:#0f3d5e;
+  --brand-2:#0b5f7a;
+  --accent:#0ea5a4;
+  --accent-soft:#e6fffb;
+  --page-bg:#f4f7fb;
+  --panel-bg:#ffffff;
+  --text:#172033;
+  --muted:#718096;
+  --border:#e5eaf1;
+  --sidebar-text:#dbeafe;
+}
+.app-shell.theme-emerald{--brand:#064e3b;--brand-2:#047857;--accent:#10b981;--accent-soft:#e7fff5}
+.app-shell.theme-purple{--brand:#3b1f6f;--brand-2:#5b21b6;--accent:#8b5cf6;--accent-soft:#f1eaff}
+.app-shell.theme-slate{--brand:#172033;--brand-2:#334155;--accent:#06b6d4;--accent-soft:#e6fbff}
+.app-shell.theme-rose{--brand:#5f172b;--brand-2:#9f1239;--accent:#e11d48;--accent-soft:#fff0f3}
+.app-shell .sidebar{background:linear-gradient(180deg,var(--brand),var(--brand-2))}
+.app-shell .nav-button.active{background:var(--accent);color:#fff;box-shadow:0 7px 18px color-mix(in srgb,var(--accent) 30%,transparent)}
+.app-shell .primary-btn{background:var(--accent);border-color:var(--accent)}
+.app-shell .primary-btn:hover{filter:brightness(.95)}
+.app-shell .stat-icon{color:var(--accent)}
+.app-shell .content{background:var(--page-bg)}
+.app-shell .topbar{border-bottom-color:var(--border)}
+.app-shell.density-compact .panel{padding:16px}
+.app-shell.density-compact .table-wrap th,.app-shell.density-compact .table-wrap td{padding:8px 10px}
+.app-shell.density-compact .stat-card{min-height:108px;padding:14px}
+
+.settings-section-title{margin:28px 0 12px}
+.settings-section-title h2{margin:0 0 5px;font-size:20px;color:var(--text)}
+.settings-section-title p{margin:0;color:var(--muted);font-size:13px}
+.theme-grid{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:12px;margin-bottom:22px}
+.theme-card{position:relative;text-align:left;border:1px solid var(--border);background:#fff;border-radius:16px;padding:12px;transition:.18s;box-shadow:0 5px 18px rgba(16,38,72,.04)}
+.theme-card:hover{transform:translateY(-2px);box-shadow:0 10px 25px rgba(16,38,72,.08)}
+.theme-card.selected{border:2px solid var(--accent);padding:11px;box-shadow:0 10px 25px rgba(16,38,72,.10)}
+.theme-preview{height:62px;border-radius:11px;background:var(--preview-main);padding:10px;display:flex;gap:6px;align-items:flex-end;overflow:hidden;margin-bottom:11px}
+.theme-preview span{display:block;border-radius:5px;background:#fff;height:18px;flex:1;opacity:.92}
+.theme-preview span:first-child{height:38px;background:var(--preview-accent)}
+.theme-preview span:last-child{height:27px;opacity:.45}
+.theme-card-copy strong{display:block;color:#1f2937;font-size:13px}
+.theme-card-copy small{display:block;color:#7b8799;margin-top:3px;font-size:11px}
+.theme-check{position:absolute;right:10px;top:10px;width:24px;height:24px;border-radius:50%;display:flex;align-items:center;justify-content:center;background:var(--accent);color:#fff;font-weight:900}
+.preference-row{display:flex;justify-content:space-between;gap:20px;align-items:center;padding:5px 0 16px}
+.preference-row p{margin:4px 0 0;color:var(--muted);font-size:12px}
+.segmented-control{display:flex;background:#f0f3f7;border-radius:10px;padding:3px;flex-shrink:0}
+.segmented-control button{border:0;background:transparent;border-radius:8px;padding:8px 12px;color:#667085;font-size:12px;font-weight:700}
+.segmented-control button.active{background:#fff;color:var(--accent);box-shadow:0 2px 7px rgba(16,38,72,.10)}
+.settings-grid-bottom{margin-top:0}
+.password-settings-form{display:grid;gap:11px}
+.password-settings-field{margin:0}
+.password-hint{font-size:11px;color:#7b8799;line-height:1.5;margin:0 0 3px}
+.settings-help-panel{margin-top:18px}
+.settings-help-grid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:12px}
+.settings-help-grid>div{border:1px solid var(--border);background:#fafbfd;border-radius:13px;padding:14px}
+.settings-help-grid strong{display:block;font-size:13px;color:#344054;margin-bottom:5px}
+.settings-help-grid span{display:block;font-size:11px;line-height:1.5;color:#7b8799}
+
+@media (max-width:1100px){.theme-grid{grid-template-columns:repeat(3,minmax(0,1fr))}.settings-help-grid{grid-template-columns:repeat(2,minmax(0,1fr))}}
+@media (max-width:700px){.theme-grid{grid-template-columns:repeat(2,minmax(0,1fr))}.preference-row{align-items:flex-start;flex-direction:column}.segmented-control{width:100%}.segmented-control button{flex:1}.settings-help-grid{grid-template-columns:1fr}}
+@media (max-width:480px){.theme-grid{grid-template-columns:1fr}}
+
 `;
 
 export default function StyledApp() {
