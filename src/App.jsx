@@ -3436,7 +3436,7 @@ function SalesPage({ businessId, staff, business, onChanged }) {
                 label="Service"
                 value={form.service_id}
                 onChange={chooseService}
-                options={services.filter(s => s.service_name.toLowerCase().includes(search.toLowerCase())).map((s) => ({
+                options={services.map((s) => ({
                   value: s.id,
                   label: s.service_name,
                 }))}
@@ -4942,7 +4942,7 @@ function CreditPage({ businessId, staff, refresh }) {
     <div className="panel">
       <div className="toolbar"><input className="search-input" value={search} onChange={e=>setSearch(e.target.value)} placeholder="Tafuta mteja..." /><button className="secondary-btn small-btn" onClick={() => exportToExcel(filtered.map(x=>({Customer:x.customer_name,Phone:x.customer_phone||"",Item:itemName(x),Original:x.original_amount,Paid:x.paid_amount,Balance:x.balance,"Due Date":x.due_date||"",Status:creditStatus(x)})), `Bless-Stationery-Credits-${todayDateInput()}.xlsx`, "Credits")}>⬇ Export</button></div>
       <div className="table-wrap"><table><thead><tr><th>Mteja</th><th>Product/Service</th><th>Deni</th><th>Amelipa</th><th>Salio</th><th>Due Date</th><th>Status</th><th>Action</th></tr></thead><tbody>
-        {filtered.map(x=><tr key={x.id}><td><strong>{x.customer_name}</strong><br/><small>{x.customer_phone || "-"}</small></td><td>{itemName(x)}</td><td>{money(x.original_amount)}</td><td>{money(x.paid_amount)}</td><td><strong>{money(x.balance)}</strong></td><td>{x.due_date || "-"}</td><td><span className={`status-chip ${creditStatus(x).toLowerCase()}`}>{creditStatus(x)}</span></td><td>{number(x.balance)>0 && <div style={{display:"flex",gap:6,flexWrap:"wrap"}}>{paying===x.id ? <><input type="number" value={paymentAmount} onChange={e=>setPaymentAmount(e.target.value)} placeholder="Kiasi" /><button className="primary-btn" onClick={()=>payDebt(x)}>Lipa</button><button className="secondary-btn" onClick={()=>setPaying(null)}>X</button></> : <button className="secondary-btn" onClick={()=>setPaying(x.id)}>+ Malipo</button>}<button className="secondary-btn" onClick={()=>sendReminder(x)}>📲 Kumbusha</button></div>}</td></tr>)}
+        {filtered.map(x=><tr key={x.id}><td><strong>{x.customer_name}</strong><br/><small>{x.customer_phone || "-"}</small></td><td>{itemName(x)}</td><td>{money(x.original_amount)}</td><td>{money(x.paid_amount)}</td><td><strong>{money(x.balance)}</strong></td><td>{x.due_date || "-"}</td><td><span className={`status-chip ${creditStatus(x).toLowerCase()}`}>{creditStatus(x)}</span></td><td>{number(x.balance)>0 && <div style={{display:"flex",gap:6,flexWrap:"wrap"}}>{paying===x.id ? <div className="debt-payment-box"><div className="debt-payment-label">Ingiza kiasi alicholipa</div><input type="number" min="1" max={number(x.balance)} step="0.01" value={paymentAmount} onChange={e=>setPaymentAmount(e.target.value)} placeholder="Mfano 10000" /><div className="debt-payment-balance">Salio baada ya malipo: <strong>{money(Math.max(0, number(x.balance) - number(paymentAmount)))}</strong></div><div className="debt-payment-actions"><button className="primary-btn" onClick={()=>payDebt(x)}>Lipa</button><button className="secondary-btn" onClick={()=>{setPaying(null);setPaymentAmount("")}}>X</button></div></div> : <button className="secondary-btn" onClick={()=>{setPaying(x.id);setPaymentAmount("")}}>+ Malipo</button>}<button className="secondary-btn" onClick={()=>sendReminder(x)}>📲 Kumbusha</button></div>}</td></tr>)}
         {!filtered.length && <tr><td colSpan="8">Hakuna madeni yaliyopatikana.</td></tr>}
       </tbody></table></div>
     </div>
@@ -7093,6 +7093,11 @@ td strong {
   color: #7c3aed;
 }
 
+.debt-payment-box { min-width: 230px; padding: 10px; border: 1px solid var(--border, #d9dee7); border-radius: 12px; background: var(--surface-2, #f7f9fc); }
+.debt-payment-label { font-size: 12px; font-weight: 700; margin-bottom: 6px; }
+.debt-payment-box input { width: 100%; box-sizing: border-box; }
+.debt-payment-balance { margin: 7px 0; font-size: 12px; color: var(--muted, #667085); }
+.debt-payment-actions { display:flex; gap:6px; flex-wrap:wrap; }
 @media (max-width: 900px) {
   .saas-toolbar {
     grid-template-columns: 1fr 1fr;
