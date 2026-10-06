@@ -34,6 +34,32 @@ function normalizePhone(value) {
   return String(value || "").replace(/[^0-9+]/g, "");
 }
 
+
+function loadExternalScript(src, id) {
+  return new Promise((resolve, reject) => {
+    const existing = document.getElementById(id);
+    if (existing) {
+      if (existing.dataset.loaded === "true") return resolve();
+      existing.addEventListener("load", resolve, { once: true });
+      existing.addEventListener("error", reject, { once: true });
+      return;
+    }
+    const script = document.createElement("script");
+    script.id = id;
+    script.src = src;
+    script.async = true;
+    script.onload = () => { script.dataset.loaded = "true"; resolve(); };
+    script.onerror = reject;
+    document.head.appendChild(script);
+  });
+}
+
+const PRODUCTION_APP_URL = "https://bless-stationery-system-sxv9.vercel.app";
+
+function receiptVerifyUrl(receiptId) {
+  return `${PRODUCTION_APP_URL}/#verify_receipt=${encodeURIComponent(receiptId)}`;
+}
+
 function todayStart() {
   const d = new Date();
   d.setHours(0, 0, 0, 0);
@@ -205,11 +231,79 @@ function App() {
     );
   }
 
+  const verifyReceiptId = (() => {
+    const params = new URLSearchParams(window.location.search);
+    const queryId = params.get("verify_receipt");
+    if (queryId) return queryId;
+    const hash = String(window.location.hash || "");
+    const hashText = hash.startsWith("#") ? hash.slice(1) : hash;
+    return new URLSearchParams(hashText).get("verify_receipt");
+  })();
+
+  if (verifyReceiptId) {
+    return <VerifyReceiptPage receiptId={verifyReceiptId} />;
+  }
+
   if (!session) {
     return <Login initialMessage={authMessage} />;
   }
 
   return <System user={session.user} />;
+}
+
+
+function VerifyReceiptPage({ receiptId }) {
+  const [state, setState] = useState({ loading: true, row: null, error: "" });
+  const [business, setBusiness] = useState(null);
+
+  useEffect(() => {
+    let alive = true;
+    async function loadReceipt() {
+      const { data, error } = await supabase.rpc("verify_credit_receipt", { p_receipt_id: receiptId });
+
+      if (!alive) return;
+      if (error || !data?.receipt) {
+        setState({ loading: false, row: null, error: error?.message || "Receipt haijapatikana au haiwezi kuthibitishwa." });
+        return;
+      }
+
+      setBusiness(data.business || null);
+      setState({ loading: false, row: data.receipt, error: "" });
+    }
+    loadReceipt();
+    return () => { alive = false; };
+  }, [receiptId]);
+
+  if (state.loading) return <div className="loading-screen"><div className="loading-box"><div className="logo-circle">B</div><h2>Bless Stationery</h2><p>Inathibitisha receipt...</p><div className="spinner" /></div></div>;
+
+  if (state.error || !state.row) return <div style={{minHeight:"100vh",display:"flex",alignItems:"center",justifyContent:"center",background:"#f4f7fb",padding:24}}><div style={{background:"#fff",borderRadius:20,padding:32,maxWidth:520,width:"100%",textAlign:"center",boxShadow:"0 18px 50px rgba(0,0,0,.08)"}}><div style={{fontSize:52}}>❌</div><h2 style={{margin:"10px 0"}}>Receipt haijathibitishwa</h2><p style={{color:"#667085"}}>{state.error || "Receipt haipo."}</p><strong>Bless Stationery</strong></div></div>;
+
+  const row = state.row;
+  const paid = number(row.paid_amount);
+  const total = number(row.original_amount);
+  const balance = Math.max(0, number(row.balance));
+  const verified = balance <= 0 && paid >= total && String(row.status || "").toUpperCase() === "PAID";
+  const billNo = String(row.id).slice(-8).toUpperCase();
+  let items = [];
+  const note = String(row.note || "");
+  if (note.startsWith("BILL_ITEMS::")) { try { items = JSON.parse(note.split("\n")[0].replace("BILL_ITEMS::", "")); } catch {} }
+
+  return <div style={{minHeight:"100vh",background:"#f4f7fb",padding:"32px 18px",fontFamily:"Arial, sans-serif",color:"#172033"}}>
+    <div style={{maxWidth:760,margin:"0 auto",background:"#fff",borderRadius:24,padding:28,boxShadow:"0 20px 60px rgba(20,30,50,.10)"}}>
+      <div style={{textAlign:"center",borderBottom:"1px solid #e5e7eb",paddingBottom:22}}>
+        {business?.logo_url ? <img src={business.logo_url} alt="Logo" style={{width:72,height:72,objectFit:"contain"}} /> : <div style={{width:72,height:72,borderRadius:16,background:"#172033",color:"#fff",display:"inline-flex",alignItems:"center",justifyContent:"center",fontSize:36,fontWeight:800}}>B</div>}
+        <h1 style={{margin:"12px 0 4px"}}>{business?.business_name || "Bless Stationery"}</h1>
+        <div style={{display:"inline-block",padding:"9px 16px",borderRadius:999,background:verified?"#e8f7ee":"#fff0f0",color:verified?"#147a3e":"#b42318",fontWeight:800}}>{verified ? "✓ VERIFIED RECEIPT" : "❌ NOT VERIFIED"}</div>
+      </div>
+      <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:18,marginTop:22}}>
+        <div><small style={{color:"#667085"}}>CUSTOMER</small><div style={{fontWeight:700,fontSize:18,marginTop:5}}>{row.customer_name || "-"}</div></div>
+        <div style={{textAlign:"right"}}><small style={{color:"#667085"}}>RECEIPT NO.</small><div style={{fontWeight:800,fontSize:18,marginTop:5}}>{billNo}</div><div style={{color:"#667085",fontSize:13,marginTop:4}}>{formatDate(row.last_payment_at || row.created_at)}</div></div>
+      </div>
+      <div style={{marginTop:22}}>{items.length ? items.map((x,i)=><div key={i} style={{display:"flex",justifyContent:"space-between",gap:12,padding:"11px 0",borderBottom:"1px solid #edf0f4"}}><span>{x.name || "Item"} × {number(x.quantity)}</span><strong>{money(x.total)}</strong></div>) : <div style={{padding:14,background:"#f8fafc",borderRadius:12}}>Receipt ya deni</div>}</div>
+      <div style={{marginTop:20,background:"#f8fafc",borderRadius:14,padding:18}}><div style={{display:"flex",justifyContent:"space-between",marginBottom:9}}><span>Jumla</span><strong>{money(total)}</strong></div><div style={{display:"flex",justifyContent:"space-between",marginBottom:9}}><span>Amelipa</span><strong>{money(paid)}</strong></div><div style={{display:"flex",justifyContent:"space-between",fontSize:19}}><strong>Salio</strong><strong style={{color:verified?"#147a3e":"#b42318"}}>{money(balance)}</strong></div></div>
+      <div style={{textAlign:"center",marginTop:24,color:"#667085",fontSize:13}}>Receipt hii imethibitishwa dhidi ya kumbukumbu ya Bless Stationery.</div>
+    </div>
+  </div>;
 }
 
 const REGISTRATION_PLANS = [
@@ -5331,17 +5425,135 @@ function CreditPage({ businessId, staff, refresh }) {
     window.open(`https://wa.me/${phone}?text=${encodeURIComponent(msg)}`, "_blank");
   }
 
-  function sendPaidReceiptWhatsApp(row) {
+  async function sendPaidReceiptWhatsApp(row) {
     const phone = getWhatsAppPhone(row);
     if (!phone) { alert("Deni limekwisha, lakini mteja hana namba ya WhatsApp iliyohifadhiwa."); return; }
-    const lineItems = parseBillItems(row);
-    const billNo = String(row.id || Date.now()).slice(-8).toUpperCase();
-    const total = number(row.original_amount);
-    const paid = number(row.paid_amount);
-    const itemText = lineItems.map((x, i) => `${i + 1}. ${x.name || "Item"} × ${number(x.quantity)} = TZS ${money(x.total)}`).join("\n");
-    const businessName = business?.business_name || "Bless Stationery";
-    const msg = `RECEIPT YA MALIPO YA DENI\n\n${businessName}\nReceipt No: ${billNo}\nMteja: ${row.customer_name || "-"}\nTarehe: ${new Date().toLocaleDateString("en-GB")}\n\nVitu:\n${itemText}\n\nJumla ya deni: TZS ${money(total)}\nJumla iliyolipwa: TZS ${money(paid)}\nSalio: TZS 0\nSTATUS: IMELIPWA KAMILI ✓\n\nAsante kwa kufanya biashara nasi.`;
-    window.open(`https://wa.me/${phone}?text=${encodeURIComponent(msg)}`, "_blank");
+    if (number(row.balance) > 0) { alert("Receipt hii inapatikana baada ya deni kuisha."); return; }
+
+    try {
+      await loadExternalScript("https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js", "bless-qrcodejs");
+      await loadExternalScript("https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js", "bless-html2canvas");
+
+      const lineItems = parseBillItems(row);
+      const billNo = String(row.id || Date.now()).slice(-8).toUpperCase();
+      const total = number(row.original_amount);
+      const paid = number(row.paid_amount);
+      const businessName = business?.business_name || "Bless Stationery";
+      const verifyUrl = receiptVerifyUrl(row.id);
+      const host = document.createElement("div");
+      host.style.position = "fixed";
+      host.style.left = "-10000px";
+      host.style.top = "0";
+      host.style.width = "720px";
+      host.style.background = "#ffffff";
+      host.style.zIndex = "-1";
+
+      const receipt = document.createElement("div");
+      receipt.style.width = "720px";
+      receipt.style.padding = "42px";
+      receipt.style.background = "#ffffff";
+      receipt.style.color = "#172033";
+      receipt.style.fontFamily = "Arial, Helvetica, sans-serif";
+      receipt.style.boxSizing = "border-box";
+      receipt.style.border = "1px solid #dfe5ec";
+      receipt.style.borderRadius = "18px";
+
+      const logo = business?.logo_url ? `<img src="${escapeHtml(business.logo_url)}" style="width:76px;height:76px;object-fit:contain;border-radius:14px;margin-bottom:10px" crossorigin="anonymous" />` : `<div style="width:76px;height:76px;border-radius:14px;background:#172033;color:white;display:flex;align-items:center;justify-content:center;font-size:38px;font-weight:800;margin:0 auto 10px">B</div>`;
+      const itemsHtml = lineItems.map((x, i) => `
+        <tr>
+          <td style="padding:11px 8px;border-bottom:1px solid #edf0f4">${i + 1}</td>
+          <td style="padding:11px 8px;border-bottom:1px solid #edf0f4"><strong>${escapeHtml(x.name || "Item")}</strong></td>
+          <td style="padding:11px 8px;border-bottom:1px solid #edf0f4;text-align:center">${number(x.quantity)}</td>
+          <td style="padding:11px 8px;border-bottom:1px solid #edf0f4;text-align:right">${escapeHtml(money(x.unit_price))}</td>
+          <td style="padding:11px 8px;border-bottom:1px solid #edf0f4;text-align:right"><strong>${escapeHtml(money(x.total))}</strong></td>
+        </tr>`).join("");
+
+      receipt.innerHTML = `
+        <div style="text-align:center;border-bottom:2px solid #172033;padding-bottom:20px;margin-bottom:22px">
+          ${logo}
+          <div style="font-size:30px;font-weight:800;letter-spacing:.4px">${escapeHtml(businessName)}</div>
+          ${business?.address ? `<div style="font-size:14px;color:#687386;margin-top:5px">${escapeHtml(business.address)}</div>` : ""}
+          ${business?.phone ? `<div style="font-size:14px;color:#687386;margin-top:3px">${escapeHtml(business.phone)}</div>` : ""}
+          <div style="display:inline-block;margin-top:14px;padding:8px 18px;border-radius:999px;background:#e8f7ee;color:#147a3e;font-size:14px;font-weight:800">✓ RECEIPT — PAID IN FULL</div>
+        </div>
+
+        <div style="display:flex;justify-content:space-between;gap:25px;margin-bottom:20px">
+          <div><div style="font-size:12px;color:#7b8494">CUSTOMER</div><div style="font-size:18px;font-weight:700;margin-top:4px">${escapeHtml(row.customer_name || "-")}</div>${row.customer_phone ? `<div style="font-size:13px;color:#687386;margin-top:3px">${escapeHtml(row.customer_phone)}</div>` : ""}</div>
+          <div style="text-align:right"><div style="font-size:12px;color:#7b8494">RECEIPT NO.</div><div style="font-size:18px;font-weight:800;margin-top:4px">${billNo}</div><div style="font-size:13px;color:#687386;margin-top:3px">${escapeHtml(formatDate(row.last_payment_at || row.created_at))}</div></div>
+        </div>
+
+        <table style="width:100%;border-collapse:collapse;font-size:14px">
+          <thead><tr style="background:#f5f7fa"><th style="padding:12px 8px;text-align:left">#</th><th style="padding:12px 8px;text-align:left">Item</th><th style="padding:12px 8px">Qty</th><th style="padding:12px 8px;text-align:right">Unit</th><th style="padding:12px 8px;text-align:right">Amount</th></tr></thead>
+          <tbody>${itemsHtml}</tbody>
+        </table>
+
+        <div style="margin-top:20px;margin-left:auto;width:340px">
+          <div style="display:flex;justify-content:space-between;padding:7px 0;font-size:15px"><span>Jumla ya deni</span><strong>${escapeHtml(money(total))}</strong></div>
+          <div style="display:flex;justify-content:space-between;padding:7px 0;font-size:15px"><span>Jumla iliyolipwa</span><strong>${escapeHtml(money(paid))}</strong></div>
+          <div style="display:flex;justify-content:space-between;padding:12px 0;margin-top:5px;border-top:2px solid #172033;font-size:19px"><strong>Salio</strong><strong style="color:#147a3e">${escapeHtml(money(0))}</strong></div>
+        </div>
+
+        <div style="margin-top:28px;padding-top:22px;border-top:1px dashed #cfd5de;display:flex;align-items:center;gap:25px">
+          <div id="bless-receipt-qr" style="width:150px;height:150px;display:flex;align-items:center;justify-content:center;background:#fff"></div>
+          <div style="flex:1"><div style="font-size:18px;font-weight:800;margin-bottom:8px">Thibitisha Receipt</div><div style="font-size:13px;line-height:1.55;color:#687386">Scan QR Code hii kuthibitisha receipt hii kwenye Bless Stationery.</div><div style="font-size:11px;color:#8a93a2;margin-top:8px;word-break:break-all">${escapeHtml(verifyUrl)}</div></div>
+        </div>
+
+        <div style="text-align:center;margin-top:24px;font-size:13px;color:#687386">Asante kwa kufanya biashara nasi.</div>
+      `;
+
+      host.appendChild(receipt);
+      document.body.appendChild(host);
+
+      const qrBox = receipt.querySelector("#bless-receipt-qr");
+      new window.QRCode(qrBox, { text: verifyUrl, width: 150, height: 150, correctLevel: window.QRCode.CorrectLevel.H });
+      await new Promise(resolve => setTimeout(resolve, 250));
+
+      const canvas = await window.html2canvas(receipt, {
+        scale: 2,
+        backgroundColor: "#ffffff",
+        useCORS: true,
+        logging: false,
+      });
+      const blob = await new Promise(resolve => canvas.toBlob(resolve, "image/png", 1));
+      if (!blob) throw new Error("Receipt image haikutengenezwa.");
+
+      const file = new File([blob], `Bless-Receipt-${billNo}.png`, { type: "image/png" });
+      const shareText = `Receipt ${billNo} ya ${businessName} — deni limelipwa kikamilifu. Scan QR kwenye picha kuthibitisha receipt.`;
+
+      // Usitumie navigator.share(): hiyo ndiyo ilikuwa inaleta screen ya kuchagua apps.
+      // Badala yake, fungua WhatsApp moja kwa moja kwa namba ya mteja.
+      let copied = false;
+      try {
+        if (navigator.clipboard && window.ClipboardItem) {
+          await navigator.clipboard.write([new ClipboardItem({ "image/png": blob })]);
+          copied = true;
+        }
+      } catch (_) {}
+
+      const waUrl = `https://wa.me/${phone}?text=${encodeURIComponent(shareText)}`;
+      window.open(waUrl, "_blank", "noopener,noreferrer");
+
+      // Hifadhi PNG pia kama fallback.
+      const imageUrl = URL.createObjectURL(blob);
+      const link = document.createElement("a");
+      link.href = imageUrl;
+      link.download = file.name;
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      setTimeout(() => URL.revokeObjectURL(imageUrl), 5000);
+
+      if (copied) {
+        alert("WhatsApp imefunguka moja kwa moja. Receipt ya picha imenakiliwa; kwenye chat bonyeza Paste (Ctrl+V) kisha tuma.");
+      } else {
+        alert("WhatsApp imefunguka moja kwa moja. Receipt imehifadhiwa kama PNG; ambatisha picha hiyo kwenye chat kisha tuma.");
+      }
+
+      host.remove();
+    } catch (err) {
+      console.error("Paid receipt image failed:", err);
+      alert("Receipt ya picha haikuweza kutengenezwa. Hakikisha internet ipo kisha jaribu tena.");
+    }
   }
 
   const filtered = credits.filter(x => `${x.customer_name} ${x.customer_phone || ""}`.toLowerCase().includes(search.toLowerCase()));
