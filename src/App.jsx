@@ -863,24 +863,8 @@ function System({ user }) {
   }, [businessId, refresh]);
 
   useEffect(() => {
-    // Google Translate translates the actual React-rendered DOM.
-    // We persist the selected language in the Google Translate cookie so the
-    // translation is applied reliably after React re-renders and page loads.
-    const setGoogleLanguageCookie = (value) => {
-      try {
-        if (!value || value === "sw") {
-          document.cookie = "googtrans=; expires=Thu, 01 Jan 1970 00:00:00 GMT; path=/";
-          document.cookie = "googtrans=; expires=Thu, 01 Jan 1970 00:00:00 GMT; path=/; domain=" + window.location.hostname;
-        } else {
-          document.cookie = `googtrans=/sw/${value}; path=/`;
-        }
-      } catch (err) {
-        console.warn("Could not set Google Translate language cookie:", err);
-      }
-    };
-
-    setGoogleLanguageCookie(language);
-
+    // Google Translate powers the translation, while our own selector keeps
+    // language names clear (e.g. Dutch, not "Kiholanzi") and shows "Lugha".
     const languageNames = {
       af: "Afrikaans", sq: "Albanian", am: "Amharic", ar: "Arabic", hy: "Armenian", az: "Azerbaijani", eu: "Basque", be: "Belarusian", bn: "Bengali", bs: "Bosnian", bg: "Bulgarian", ca: "Catalan", ceb: "Cebuano", ny: "Chichewa",
       "zh-CN": "Chinese (Simplified)", "zh-TW": "Chinese (Traditional)", co: "Corsican", hr: "Croatian", cs: "Czech", da: "Danish", nl: "Dutch", en: "English", eo: "Esperanto", et: "Estonian", tl: "Filipino", fi: "Finnish", fr: "French", fy: "Frisian", gl: "Galician", ka: "Georgian", de: "German", el: "Greek", gu: "Gujarati", ht: "Haitian Creole", ha: "Hausa", haw: "Hawaiian", he: "Hebrew", hi: "Hindi", hmn: "Hmong", hu: "Hungarian", is: "Icelandic", ig: "Igbo", id: "Indonesian", ga: "Irish", it: "Italian", ja: "Japanese", jv: "Javanese", kn: "Kannada", kk: "Kazakh", km: "Khmer", rw: "Kinyarwanda", ko: "Korean", ku: "Kurdish", ky: "Kyrgyz", lo: "Lao", la: "Latin", lv: "Latvian", lt: "Lithuanian", lb: "Luxembourgish", mk: "Macedonian", mg: "Malagasy", ms: "Malay", ml: "Malayalam", mt: "Maltese", mi: "Maori", mr: "Marathi", mn: "Mongolian", my: "Myanmar (Burmese)", ne: "Nepali", no: "Norwegian", or: "Odia", ps: "Pashto", fa: "Persian", pl: "Polish", pt: "Portuguese", pa: "Punjabi", ro: "Romanian", ru: "Russian", sm: "Samoan", gd: "Scots Gaelic", sr: "Serbian", st: "Sesotho", sn: "Shona", sd: "Sindhi", si: "Sinhala", sk: "Slovak", sl: "Slovenian", so: "Somali", es: "Spanish", su: "Sundanese", sw: "Kiswahili", sv: "Swedish", tg: "Tajik", ta: "Tamil", tt: "Tatar", te: "Telugu", th: "Thai", tr: "Turkish", tk: "Turkmen", uk: "Ukrainian", ur: "Urdu", ug: "Uyghur", uz: "Uzbek", vi: "Vietnamese", cy: "Welsh", xh: "Xhosa", yi: "Yiddish", yo: "Yoruba", zu: "Zulu"
@@ -940,24 +924,10 @@ function System({ user }) {
   function changeLanguage(value) {
     setLanguage(value);
     localStorage.setItem(`bless_language_${user.id}`, value);
-
-    // The Google Translate dropdown can be hidden/removed by Google after a
-    // React render, so changing its value alone is not reliable. The cookie
-    // is the stable mechanism Google uses to remember the page language.
-    try {
-      if (value === "sw") {
-        document.cookie = "googtrans=; expires=Thu, 01 Jan 1970 00:00:00 GMT; path=/";
-        document.cookie = "googtrans=; expires=Thu, 01 Jan 1970 00:00:00 GMT; path=/; domain=" + window.location.hostname;
-      } else {
-        document.cookie = `googtrans=/sw/${value}; path=/`;
-      }
-    } catch (err) {
-      console.warn("Could not save selected language:", err);
-    }
-
-    // Reload once so Google Translate applies the selected language to the
-    // complete React page, not just the selector.
-    window.location.reload();
+    const select = document.querySelector("#google_translate_element select.goog-te-combo");
+    if (!select) return;
+    select.value = value;
+    select.dispatchEvent(new Event("change", { bubbles: true }));
   }
 
   useEffect(() => {
@@ -5340,16 +5310,37 @@ function CreditPage({ businessId, staff, refresh }) {
     const paid = number(row.paid_amount) + pay;
     const balance = Math.max(0, number(row.original_amount) - paid);
     const { error } = await supabase.from("credit_transactions").update({ paid_amount: paid, balance, status: balance <= 0 ? "PAID" : "PARTIAL", last_payment_at: new Date().toISOString() }).eq("id", row.id).eq("business_id", businessId);
-    if (error) alert(error.message); else { setPaying(null); setPaymentAmount(""); await load(); }
+    if (error) { alert(error.message); return; }
+    setPaying(null); setPaymentAmount(""); await load();
+    if (balance <= 0) sendPaidReceiptWhatsApp({ ...row, paid_amount: paid, balance: 0, status: "PAID" });
   }
 
   function itemName(x) {
     return x.sales?.products?.product_name || x.sales?.services?.service_name || products.find(p=>p.id===x.product_id)?.product_name || services.find(s=>s.id===x.service_id)?.service_name || "Multiple Items";
   }
+  function getWhatsAppPhone(row) {
+    let phone = String(row?.customer_phone || "").replace(/[^0-9]/g, "");
+    if (phone.startsWith("0")) phone = "255" + phone.slice(1);
+    return phone;
+  }
+
   function sendReminder(row) {
-    if (!row.customer_phone) { alert("Mteja hana namba ya simu."); return; }
-    const phone = row.customer_phone.replace(/[^0-9]/g, "");
+    const phone = getWhatsAppPhone(row);
+    if (!phone) { alert("Mteja hana namba ya simu."); return; }
     const msg = `Habari ${row.customer_name}, tunakukumbusha kuwa una deni la TZS ${money(row.balance)} katika Bless Stationery. Tarehe ya mwisho ya malipo ni ${row.due_date || "leo"}. Tafadhali lipa kwa wakati. Asante.`;
+    window.open(`https://wa.me/${phone}?text=${encodeURIComponent(msg)}`, "_blank");
+  }
+
+  function sendPaidReceiptWhatsApp(row) {
+    const phone = getWhatsAppPhone(row);
+    if (!phone) { alert("Deni limekwisha, lakini mteja hana namba ya WhatsApp iliyohifadhiwa."); return; }
+    const lineItems = parseBillItems(row);
+    const billNo = String(row.id || Date.now()).slice(-8).toUpperCase();
+    const total = number(row.original_amount);
+    const paid = number(row.paid_amount);
+    const itemText = lineItems.map((x, i) => `${i + 1}. ${x.name || "Item"} × ${number(x.quantity)} = TZS ${money(x.total)}`).join("\n");
+    const businessName = business?.business_name || "Bless Stationery";
+    const msg = `RECEIPT YA MALIPO YA DENI\n\n${businessName}\nReceipt No: ${billNo}\nMteja: ${row.customer_name || "-"}\nTarehe: ${new Date().toLocaleDateString("en-GB")}\n\nVitu:\n${itemText}\n\nJumla ya deni: TZS ${money(total)}\nJumla iliyolipwa: TZS ${money(paid)}\nSalio: TZS 0\nSTATUS: IMELIPWA KAMILI ✓\n\nAsante kwa kufanya biashara nasi.`;
     window.open(`https://wa.me/${phone}?text=${encodeURIComponent(msg)}`, "_blank");
   }
 
@@ -5409,7 +5400,7 @@ function CreditPage({ businessId, staff, refresh }) {
     <div className="panel">
       <div className="toolbar"><input className="search-input" value={search} onChange={e=>setSearch(e.target.value)} placeholder="Tafuta mteja..." /><button className="secondary-btn small-btn" onClick={() => exportToExcel(filtered.map(x=>({Customer:x.customer_name,Phone:x.customer_phone||"",Item:itemName(x),Original:x.original_amount,Paid:x.paid_amount,Balance:x.balance,"Due Date":x.due_date||"",Status:creditStatus(x)})), `Bless-Stationery-Credits-${todayDateInput()}.xlsx`, "Credits")}>⬇ Export</button></div>
       <div className="table-wrap"><table><thead><tr><th>Mteja</th><th>Bill / Vitu</th><th>Deni</th><th>Amelipa</th><th>Salio</th><th>Due Date</th><th>Status</th><th>Action</th></tr></thead><tbody>
-        {filtered.map(x=><tr key={x.id}><td><strong>{x.customer_name}</strong><br/><small>{x.customer_phone || "-"}</small></td><td>{itemName(x)}{String(x.note||"").startsWith("BILL_ITEMS::") && <small className="bill-multiple-badge">Multiple Items</small>}</td><td>{money(x.original_amount)}</td><td>{money(x.paid_amount)}</td><td><strong>{money(x.balance)}</strong></td><td>{x.due_date || "-"}</td><td><span className={`status-chip ${creditStatus(x).toLowerCase()}`}>{creditStatus(x)}</span></td><td><div style={{display:"flex",gap:6,flexWrap:"wrap"}}><button className="secondary-btn small-btn" onClick={()=>printBillWindow(x)}>🖨 Print Bill</button>{number(x.balance)>0 && <>{paying===x.id ? <div className="debt-payment-box"><div className="debt-payment-label">Ingiza kiasi alicholipa</div><input type="number" min="1" max={number(x.balance)} step="0.01" value={paymentAmount} onChange={e=>setPaymentAmount(e.target.value)} placeholder="Mfano 10000" /><div className="debt-payment-balance">Salio baada ya malipo: <strong>{money(Math.max(0, number(x.balance) - number(paymentAmount)))}</strong></div><div className="debt-payment-actions"><button className="primary-btn" onClick={()=>payDebt(x)}>Lipa</button><button className="secondary-btn" onClick={()=>{setPaying(null);setPaymentAmount("")}}>X</button></div></div> : <button className="secondary-btn small-btn" onClick={()=>{setPaying(x.id);setPaymentAmount("")}}>+ Malipo</button>}<button className="secondary-btn small-btn" onClick={()=>sendReminder(x)}>📲 Kumbusha</button></>}</div></td></tr>)}
+        {filtered.map(x=><tr key={x.id}><td><strong>{x.customer_name}</strong><br/><small>{x.customer_phone || "-"}</small></td><td>{itemName(x)}{String(x.note||"").startsWith("BILL_ITEMS::") && <small className="bill-multiple-badge">Multiple Items</small>}</td><td>{money(x.original_amount)}</td><td>{money(x.paid_amount)}</td><td><strong>{money(x.balance)}</strong></td><td>{x.due_date || "-"}</td><td><span className={`status-chip ${creditStatus(x).toLowerCase()}`}>{creditStatus(x)}</span></td><td><div style={{display:"flex",gap:6,flexWrap:"wrap"}}><button className="secondary-btn small-btn" onClick={()=>printBillWindow(x)}>🖨 Print Bill</button>{number(x.balance)>0 ? <>{paying===x.id ? <div className="debt-payment-box"><div className="debt-payment-label">Ingiza kiasi alicholipa</div><input type="number" min="1" max={number(x.balance)} step="0.01" value={paymentAmount} onChange={e=>setPaymentAmount(e.target.value)} placeholder="Mfano 10000" /><div className="debt-payment-balance">Salio baada ya malipo: <strong>{money(Math.max(0, number(x.balance) - number(paymentAmount)))}</strong></div><div className="debt-payment-actions"><button className="primary-btn" onClick={()=>payDebt(x)}>Lipa</button><button className="secondary-btn" onClick={()=>{setPaying(null);setPaymentAmount("")}}>X</button></div></div> : <button className="secondary-btn small-btn" onClick={()=>{setPaying(x.id);setPaymentAmount("")}}>+ Malipo</button>}<button className="secondary-btn small-btn" onClick={()=>sendReminder(x)}>📲 Kumbusha</button></> : <button className="secondary-btn small-btn" onClick={()=>sendPaidReceiptWhatsApp(x)}>📲 Tuma Receipt</button>}</div></td></tr>)}
         {!filtered.length && <tr><td colSpan="8">Hakuna madeni yaliyopatikana.</td></tr>}
       </tbody></table></div>
     </div>
