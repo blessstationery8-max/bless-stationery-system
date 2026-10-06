@@ -827,6 +827,8 @@ function System({ user }) {
   const [refresh, setRefresh] = useState(0);
   const [theme, setTheme] = useState(() => localStorage.getItem(`bless_theme_${user.id}`) || "ocean");
   const [density, setDensity] = useState(() => localStorage.getItem(`bless_density_${user.id}`) || "comfortable");
+  const [language, setLanguage] = useState(() => localStorage.getItem(`bless_language_${user.id}`) || "sw");
+  const [availableLanguages, setAvailableLanguages] = useState([]);
   const [showWelcome, setShowWelcome] = useState(() => {
     try {
       return sessionStorage.getItem(`bless_welcome_${user.id}`) !== "seen";
@@ -859,6 +861,104 @@ function System({ user }) {
     loadPulse();
     return () => { cancelled = true; };
   }, [businessId, refresh]);
+
+  useEffect(() => {
+    // Google Translate translates the actual React-rendered DOM.
+    // We persist the selected language in the Google Translate cookie so the
+    // translation is applied reliably after React re-renders and page loads.
+    const setGoogleLanguageCookie = (value) => {
+      try {
+        if (!value || value === "sw") {
+          document.cookie = "googtrans=; expires=Thu, 01 Jan 1970 00:00:00 GMT; path=/";
+          document.cookie = "googtrans=; expires=Thu, 01 Jan 1970 00:00:00 GMT; path=/; domain=" + window.location.hostname;
+        } else {
+          document.cookie = `googtrans=/sw/${value}; path=/`;
+        }
+      } catch (err) {
+        console.warn("Could not set Google Translate language cookie:", err);
+      }
+    };
+
+    setGoogleLanguageCookie(language);
+
+    const languageNames = {
+      af: "Afrikaans", sq: "Albanian", am: "Amharic", ar: "Arabic", hy: "Armenian", az: "Azerbaijani", eu: "Basque", be: "Belarusian", bn: "Bengali", bs: "Bosnian", bg: "Bulgarian", ca: "Catalan", ceb: "Cebuano", ny: "Chichewa",
+      "zh-CN": "Chinese (Simplified)", "zh-TW": "Chinese (Traditional)", co: "Corsican", hr: "Croatian", cs: "Czech", da: "Danish", nl: "Dutch", en: "English", eo: "Esperanto", et: "Estonian", tl: "Filipino", fi: "Finnish", fr: "French", fy: "Frisian", gl: "Galician", ka: "Georgian", de: "German", el: "Greek", gu: "Gujarati", ht: "Haitian Creole", ha: "Hausa", haw: "Hawaiian", he: "Hebrew", hi: "Hindi", hmn: "Hmong", hu: "Hungarian", is: "Icelandic", ig: "Igbo", id: "Indonesian", ga: "Irish", it: "Italian", ja: "Japanese", jv: "Javanese", kn: "Kannada", kk: "Kazakh", km: "Khmer", rw: "Kinyarwanda", ko: "Korean", ku: "Kurdish", ky: "Kyrgyz", lo: "Lao", la: "Latin", lv: "Latvian", lt: "Lithuanian", lb: "Luxembourgish", mk: "Macedonian", mg: "Malagasy", ms: "Malay", ml: "Malayalam", mt: "Maltese", mi: "Maori", mr: "Marathi", mn: "Mongolian", my: "Myanmar (Burmese)", ne: "Nepali", no: "Norwegian", or: "Odia", ps: "Pashto", fa: "Persian", pl: "Polish", pt: "Portuguese", pa: "Punjabi", ro: "Romanian", ru: "Russian", sm: "Samoan", gd: "Scots Gaelic", sr: "Serbian", st: "Sesotho", sn: "Shona", sd: "Sindhi", si: "Sinhala", sk: "Slovak", sl: "Slovenian", so: "Somali", es: "Spanish", su: "Sundanese", sw: "Kiswahili", sv: "Swedish", tg: "Tajik", ta: "Tamil", tt: "Tatar", te: "Telugu", th: "Thai", tr: "Turkish", tk: "Turkmen", uk: "Ukrainian", ur: "Urdu", ug: "Uyghur", uz: "Uzbek", vi: "Vietnamese", cy: "Welsh", xh: "Xhosa", yi: "Yiddish", yo: "Yoruba", zu: "Zulu"
+    };
+
+    const syncLanguageOptions = () => {
+      const select = document.querySelector("#google_translate_element select.goog-te-combo");
+      if (!select) return false;
+      const options = Array.from(select.options)
+        .map((option) => ({ value: option.value, label: languageNames[option.value] || option.textContent.trim() }))
+        .filter((option) => option.value);
+      const ordered = [
+        { value: "sw", label: "Kiswahili" },
+        ...options.filter((x) => x.value !== "sw"),
+      ];
+      const seen = new Set();
+      const cleanOptions = ordered.filter((x) => !seen.has(x.value) && seen.add(x.value));
+      setAvailableLanguages(cleanOptions);
+      if (language && language !== "sw" && select.value !== language) {
+        select.value = language;
+        select.dispatchEvent(new Event("change", { bubbles: true }));
+      }
+      return true;
+    };
+
+    window.googleTranslateElementInit = () => {
+      if (!window.google?.translate || !document.getElementById("google_translate_element")) return;
+      try {
+        new window.google.translate.TranslateElement({
+          pageLanguage: "sw",
+          autoDisplay: false,
+          multilanguagePage: true,
+        }, "google_translate_element");
+        let tries = 0;
+        const timer = setInterval(() => {
+          tries += 1;
+          if (syncLanguageOptions() || tries >= 30) clearInterval(timer);
+        }, 150);
+      } catch (err) {
+        console.warn("Google Translate init failed:", err);
+      }
+    };
+
+    if (!document.getElementById("google-translate-script")) {
+      const script = document.createElement("script");
+      script.id = "google-translate-script";
+      script.src = "https://translate.google.com/translate_a/element.js?cb=googleTranslateElementInit";
+      script.async = true;
+      document.body.appendChild(script);
+    } else if (window.google?.translate) {
+      window.googleTranslateElementInit();
+    }
+
+    return () => {};
+  }, []);
+
+  function changeLanguage(value) {
+    setLanguage(value);
+    localStorage.setItem(`bless_language_${user.id}`, value);
+
+    // The Google Translate dropdown can be hidden/removed by Google after a
+    // React render, so changing its value alone is not reliable. The cookie
+    // is the stable mechanism Google uses to remember the page language.
+    try {
+      if (value === "sw") {
+        document.cookie = "googtrans=; expires=Thu, 01 Jan 1970 00:00:00 GMT; path=/";
+        document.cookie = "googtrans=; expires=Thu, 01 Jan 1970 00:00:00 GMT; path=/; domain=" + window.location.hostname;
+      } else {
+        document.cookie = `googtrans=/sw/${value}; path=/`;
+      }
+    } catch (err) {
+      console.warn("Could not save selected language:", err);
+    }
+
+    // Reload once so Google Translate applies the selected language to the
+    // complete React page, not just the selector.
+    window.location.reload();
+  }
 
   useEffect(() => {
     const onKey = (e) => {
@@ -969,6 +1069,10 @@ function System({ user }) {
 
   const pages = {
     dashboard: <Dashboard businessId={businessId} business={business} go={go} refresh={refresh} />,
+    customers: <CustomersPage businessId={businessId} refresh={refresh} />,
+    analytics: <AnalyticsPage businessId={businessId} refresh={refresh} />,
+    cashClosing: <CashClosingPage businessId={businessId} refresh={refresh} />,
+    optionalTools: <OptionalToolsPage businessId={businessId} />,
     products: (
       <ProductsPage
         businessId={businessId}
@@ -1016,6 +1120,8 @@ function System({ user }) {
     reports: <ReportsPage businessId={businessId} refresh={refresh} />,
     staff: <StaffPage businessId={businessId} refresh={refresh} />,
     credits: <CreditPage businessId={businessId} staff={staff} refresh={refresh} />,
+    customerCredits: <CustomerCreditsPage businessId={businessId} staff={staff} refresh={refresh} />,
+    payables: <PayablesPage businessId={businessId} staff={staff} refresh={refresh} />,
     attendance: <AttendancePage businessId={businessId} staff={staff} refresh={refresh} />,
     settings: (
       <BusinessSettingsPage
@@ -1069,8 +1175,9 @@ function System({ user }) {
             <div className="bless-command-grid">
               {[
                 ["sales","🛒","New Sale"],["stock","📦","Stock In"],["inventoryHistory","↕","Inventory History"],
-                ["products","▣","Products"],["services","⚙","Services"],["reports","▤","Reports"],
-                ["credits","💳","Madeni"],["attendance","🕐","Attendance"],["settings","⚙","Settings"],
+                ["products","▣","Products"],["services","⚙","Services"],["customers","👥","Customers"],
+                ["analytics","📊","Profit & Loss"],["cashClosing","💵","Cash Closing"],["reports","▤","Reports"],
+                ["credits","💳","Madeni"],["payables","📌","Madeni Yetu"],["customerCredits","💰","Customer Credits"],["attendance","🕐","Attendance"],["settings","⚙","Settings"],
               ].map(([target, icon, label]) => (
                 <button key={target} onClick={() => { setShowCommand(false); go(target); }}>
                   <span>{icon}</span><strong>{label}</strong><em>→</em>
@@ -1149,7 +1256,28 @@ function System({ user }) {
             onClick={() => go("services")}
           />
 
+          <NavButton
+            active={page === "customers"}
+            icon="👥"
+            text="Customers"
+            onClick={() => go("customers")}
+          />
+
           <div className="nav-title">FEDHA</div>
+
+          <NavButton
+            active={page === "analytics"}
+            icon="📊"
+            text="Profit & Loss"
+            onClick={() => go("analytics")}
+          />
+
+          <NavButton
+            active={page === "cashClosing"}
+            icon="💵"
+            text="Daily Cash Closing"
+            onClick={() => go("cashClosing")}
+          />
 
           <NavButton
             active={page === "expenses"}
@@ -1189,6 +1317,19 @@ function System({ user }) {
           />
 
           <NavButton
+            active={page === "payables"}
+            icon="📌"
+            text="Madeni Yetu"
+            onClick={() => go("payables")}
+          />
+          <NavButton
+            active={page === "customerCredits"}
+            icon="💰"
+            text="Customer Credits"
+            onClick={() => go("customerCredits")}
+          />
+
+          <NavButton
             active={page === "attendance"}
             icon="🕐"
             text="Staff Attendance"
@@ -1200,6 +1341,13 @@ function System({ user }) {
             icon="⚙"
             text="Business Settings"
             onClick={() => go("settings")}
+          />
+
+          <NavButton
+            active={page === "optionalTools"}
+            icon="🛠"
+            text="Advanced Tools"
+            onClick={() => go("optionalTools")}
           />
 
           {isPlatformAdmin && (
@@ -1272,6 +1420,14 @@ function System({ user }) {
                 ? "Products"
                 : page === "services"
                 ? "Services"
+                : page === "customers"
+                ? "Customers"
+                : page === "analytics"
+                ? "Profit & Loss"
+                : page === "cashClosing"
+                ? "Daily Cash Closing"
+                : page === "optionalTools"
+                ? "Advanced Tools"
                 : page === "expenses"
                 ? "Expenses"
                 : page === "deposits"
@@ -1282,6 +1438,10 @@ function System({ user }) {
                 ? "Staff"
                 : page === "credits"
                 ? "Madeni / Credit"
+                : page === "payables"
+                ? "Madeni Yetu"
+                : page === "customerCredits"
+                ? "Customer Credits"
                 : page === "attendance"
                 ? "Staff Attendance"
                 : page === "settings"
@@ -1307,6 +1467,21 @@ function System({ user }) {
           </div>
 
           <div className="top-actions">
+            <div className="language-control" title="Lugha">
+              <span className="language-icon">🌐</span>
+              <span className="language-label">Lugha</span>
+              <select
+                className="language-select"
+                value={language}
+                onChange={(e) => changeLanguage(e.target.value)}
+                aria-label="Lugha"
+              >
+                {(availableLanguages.length ? availableLanguages : [{ value: "sw", label: "Kiswahili" }, { value: "en", label: "English" }, { value: "nl", label: "Dutch" }, { value: "fr", label: "French" }, { value: "de", label: "German" }, { value: "es", label: "Spanish" }]).map((item) => (
+                  <option key={item.value} value={item.value}>{item.label}</option>
+                ))}
+              </select>
+              <div id="google_translate_element" className="google-translate-hidden" />
+            </div>
             <button className="refresh-btn" onClick={() => setRefresh((x) => x + 1)}>
               ↻ Refresh
             </button>
@@ -2223,6 +2398,36 @@ function ProductsPage({ businessId, onChanged }) {
     load();
   }, [businessId]);
 
+  useEffect(() => {
+    let cancelled = false;
+    async function loadCustomerCredit() {
+      if (!businessId || form.payment_method !== "CUSTOMER_CREDIT" || !form.customer_name.trim()) {
+        setAvailableCustomerCredit(0);
+        setCustomerCreditRows([]);
+        return;
+      }
+      const { data, error } = await supabase
+        .from("customer_credits")
+        .select("*")
+        .eq("business_id", businessId)
+        .ilike("customer_name", form.customer_name.trim())
+        .gt("balance", 0)
+        .order("created_at", { ascending: true });
+      if (cancelled) return;
+      if (error) {
+        console.error("Failed to load customer credit:", error);
+        setAvailableCustomerCredit(0);
+        setCustomerCreditRows([]);
+        return;
+      }
+      const rows = data || [];
+      setCustomerCreditRows(rows);
+      setAvailableCustomerCredit(rows.reduce((a, x) => a + number(x.balance), 0));
+    }
+    loadCustomerCredit();
+    return () => { cancelled = true; };
+  }, [businessId, form.payment_method, form.customer_name, form.customer_phone]);
+
   async function load() {
     if (!businessId) return;
 
@@ -3036,6 +3241,8 @@ function SalesPage({ businessId, staff, business, onChanged }) {
   const [stockIn, setStockIn] = useState([]);
   const [busy, setBusy] = useState(false);
   const [receipt, setReceipt] = useState(null);
+  const [availableCustomerCredit, setAvailableCustomerCredit] = useState(0);
+  const [customerCreditRows, setCustomerCreditRows] = useState([]);
 
   const [type, setType] = useState("PRODUCT");
   const [productMode, setProductMode] = useState("existing");
@@ -3048,6 +3255,9 @@ function SalesPage({ businessId, staff, business, onChanged }) {
     unit_cost: "",
     selling_price: "",
     payment_method: "CASH",
+    customer_name: "",
+    customer_phone: "",
+    amount_received: "",
     credit_customer_name: "",
     credit_customer_phone: "",
     credit_paid_amount: "0",
@@ -3173,14 +3383,43 @@ function SalesPage({ businessId, staff, business, onChanged }) {
       }
     }
 
+    const saleTotal = qty * price;
+    const received = number(form.amount_received);
+    const change = Math.max(0, received - saleTotal);
+
+    if (form.payment_method === "CASH") {
+      if (received <= 0) {
+        alert("Weka kiasi alichopokea kutoka kwa mteja.");
+        return;
+      }
+      if (received < saleTotal) {
+        alert("Kiasi alichopokea hakiwezi kuwa chini ya jumla ya mauzo. Tumia MKOPO/CREDIT kama mteja hajalipa yote.");
+        return;
+      }
+      if (change > 0 && !form.customer_name.trim()) {
+        alert("Kuna change ya mteja. Weka jina la mteja ili change hiyo iwe Customer Credit.");
+        return;
+      }
+    }
+
     if (form.payment_method === "CREDIT" && !form.credit_customer_name.trim()) {
       alert("Weka jina la mteja anayechukua kwa mkopo.");
       return;
     }
 
+    if (form.payment_method === "CUSTOMER_CREDIT") {
+      if (!form.customer_name.trim()) {
+        alert("Weka jina la mteja mwenye Customer Credit.");
+        return;
+      }
+      if (availableCustomerCredit < saleTotal) {
+        alert(`Customer Credit ya ${form.customer_name} ni ${money(availableCustomerCredit)} tu. Inahitajika ${money(saleTotal)}.`);
+        return;
+      }
+    }
+
     if (form.payment_method === "CREDIT") {
       const paidNow = number(form.credit_paid_amount);
-      const saleTotal = qty * price;
       if (paidNow < 0 || paidNow > saleTotal) {
         alert("Kiasi alicholipa hakiwezi kuwa chini ya 0 au zaidi ya jumla ya sale.");
         return;
@@ -3242,6 +3481,76 @@ function SalesPage({ businessId, staff, business, onChanged }) {
       }
     }
 
+    // Cash change becomes a customer credit, so the business does not lose track of it.
+    if (form.payment_method === "CASH" && change > 0) {
+      const { data: creditRow, error: customerCreditError } = await supabase
+        .from("customer_credits")
+        .insert({
+          business_id: businessId,
+          customer_name: form.customer_name.trim(),
+          customer_phone: form.customer_phone.trim() || null,
+          original_amount: change,
+          used_amount: 0,
+          status: "AVAILABLE",
+          source_sale_id: data.id,
+          note: `Change ya sale ${data.id}`,
+          created_by: staff?.id || null,
+        })
+        .select()
+        .single();
+
+      if (customerCreditError) {
+        alert(`Sale imehifadhiwa lakini Customer Credit haijaandikwa: ${customerCreditError.message}`);
+      } else {
+        const { error: creditTxnError } = await supabase.from("customer_credit_transactions").insert({
+          business_id: businessId,
+          customer_credit_id: creditRow.id,
+          transaction_type: "ADD",
+          amount: change,
+          sale_id: data.id,
+          note: "Change kutoka sale",
+          staff_id: staff?.id || null,
+          created_by: staff?.id || null,
+        });
+        if (creditTxnError) console.error("Customer credit history error:", creditTxnError);
+      }
+    }
+
+    if (form.payment_method === "CUSTOMER_CREDIT") {
+      let remaining = saleTotal;
+      for (const creditRow of customerCreditRows) {
+        if (remaining <= 0) break;
+        const available = number(creditRow.balance);
+        const use = Math.min(available, remaining);
+        if (use <= 0) continue;
+        const newUsed = number(creditRow.used_amount) + use;
+        const newBalance = Math.max(0, number(creditRow.original_amount) - newUsed);
+        const newStatus = newBalance <= 0 ? "USED" : "PARTIAL";
+        const { error: updateCreditError } = await supabase
+          .from("customer_credits")
+          .update({ used_amount: newUsed, status: newStatus, updated_at: new Date().toISOString() })
+          .eq("id", creditRow.id)
+          .eq("business_id", businessId);
+        if (updateCreditError) {
+          console.error("Customer credit update error:", updateCreditError);
+          alert(`Sale imehifadhiwa lakini matumizi ya Customer Credit hayajakamilika: ${updateCreditError.message}`);
+          break;
+        }
+        const { error: useTxnError } = await supabase.from("customer_credit_transactions").insert({
+          business_id: businessId,
+          customer_credit_id: creditRow.id,
+          transaction_type: "USE",
+          amount: use,
+          sale_id: data.id,
+          note: `Customer Credit imetumika kwenye sale ${data.id}`,
+          staff_id: staff?.id || null,
+          created_by: staff?.id || null,
+        });
+        if (useTxnError) console.error("Customer credit use history error:", useTxnError);
+        remaining -= use;
+      }
+    }
+
     let itemName = form.manual_name;
 
     if (type === "PRODUCT" && productMode === "existing") {
@@ -3267,6 +3576,8 @@ function SalesPage({ businessId, staff, business, onChanged }) {
       total: qty * price,
       profit: qty * (price - cost),
       payment: form.payment_method,
+      amountReceived: form.payment_method === "CASH" ? received : number(form.credit_paid_amount),
+      changeAmount: form.payment_method === "CASH" ? change : 0,
       customerName:
         form.payment_method === "CREDIT"
           ? form.credit_customer_name.trim()
@@ -3293,6 +3604,13 @@ function SalesPage({ businessId, staff, business, onChanged }) {
       ...form,
       quantity: "1",
       manual_name: "",
+      customer_name: "",
+      customer_phone: "",
+      amount_received: "",
+      credit_customer_name: "",
+      credit_customer_phone: "",
+      credit_paid_amount: "0",
+      credit_due_date: "",
       sale_date: localDateTimeValue(),
     });
 
@@ -3493,9 +3811,60 @@ function SalesPage({ businessId, staff, business, onChanged }) {
                 { value: "NMB", label: "NMB" },
                 { value: "BANK", label: "BANK" },
                 { value: "OTHER", label: "OTHER" },
+                { value: "CUSTOMER_CREDIT", label: "CUSTOMER CREDIT" },
                 { value: "CREDIT", label: "MKOPO / CREDIT" },
               ]}
             />
+
+            {form.payment_method === "CASH" && (
+              <>
+                <Field
+                  label="Jina la Mteja (ikiwa kuna change)"
+                  value={form.customer_name}
+                  onChange={(v) => setForm({ ...form, customer_name: v })}
+                  placeholder="Mfano: Juma"
+                />
+                <Field
+                  label="Simu ya Mteja"
+                  value={form.customer_phone}
+                  onChange={(v) => setForm({ ...form, customer_phone: v })}
+                  placeholder="2557XXXXXXXX"
+                />
+                <Field
+                  label="Kiasi Alichopokea Mteja"
+                  type="number"
+                  value={form.amount_received}
+                  onChange={(v) => setForm({ ...form, amount_received: v })}
+                  min="0"
+                />
+                <div className="notice full">
+                  💵 Jumla: <strong>{money(total)}</strong> | Amelipa: <strong>{money(form.amount_received)}</strong> | Change: <strong>{money(Math.max(0, number(form.amount_received) - total))}</strong>
+                  {number(form.amount_received) > total && <span> — Change hii itawekwa moja kwa moja kwenye Customer Credit.</span>}
+                </div>
+              </>
+            )}
+
+            {form.payment_method === "CUSTOMER_CREDIT" && (
+              <>
+                <Field
+                  label="Jina la Mteja Mwenye Credit"
+                  value={form.customer_name}
+                  onChange={(v) => setForm({ ...form, customer_name: v })}
+                  placeholder="Mfano: Juma"
+                  required
+                />
+                <Field
+                  label="Simu ya Mteja"
+                  value={form.customer_phone}
+                  onChange={(v) => setForm({ ...form, customer_phone: v })}
+                  placeholder="2557XXXXXXXX"
+                />
+                <div className="notice full">
+                  💰 Customer Credit inayopatikana: <strong>{money(availableCustomerCredit)}</strong> | Jumla ya mauzo: <strong>{money(total)}</strong>
+                  {availableCustomerCredit >= total && total > 0 ? <span> — Credit inatosha kulipia sale hii.</span> : <span> — Credit haitoshi au jina halijapatikana.</span>}
+                </div>
+              </>
+            )}
 
             {form.payment_method === "CREDIT" && (
               <>
@@ -4823,13 +5192,11 @@ function CreditPage({ businessId, staff, refresh }) {
   const [credits, setCredits] = useState([]);
   const [products, setProducts] = useState([]);
   const [services, setServices] = useState([]);
+  const [business, setBusiness] = useState(null);
+  const [items, setItems] = useState([{ item_type: "PRODUCT", product_id: "", service_id: "", quantity: "1", unit_price: "" }]);
   const [form, setForm] = useState({
     customer_name: "",
     customer_phone: "",
-    product_id: "",
-    service_id: "",
-    item_type: "PRODUCT",
-    amount: "",
     paid_amount: "0",
     due_date: "",
     note: "",
@@ -4838,46 +5205,131 @@ function CreditPage({ businessId, staff, refresh }) {
   const [paymentAmount, setPaymentAmount] = useState("");
   const [search, setSearch] = useState("");
   const [busy, setBusy] = useState(false);
+  const [printBill, setPrintBill] = useState(null);
 
   async function load() {
     if (!businessId) return;
-    const [{ data: c, error }, { data: p }, { data: sv }] = await Promise.all([
+    const [{ data: c, error }, { data: p }, { data: sv }, { data: b }] = await Promise.all([
       supabase.from("credit_transactions").select("*, sales(sale_date, sale_type, quantity, selling_price, products(product_name), services(service_name))").eq("business_id", businessId).order("due_date", { ascending: true }),
       supabase.from("products").select("*").eq("business_id", businessId).eq("active", true).order("product_name"),
       supabase.from("services").select("*").eq("business_id", businessId).eq("active", true).order("service_name"),
+      supabase.from("businesses").select("business_name,phone,email,address,logo_url").eq("id", businessId).maybeSingle(),
     ]);
     if (error) { alert(error.message); return; }
-    setCredits(c || []); setProducts(p || []); setServices(sv || []);
+    setCredits(c || []); setProducts(p || []); setServices(sv || []); setBusiness(b || null);
   }
   useEffect(() => { load(); }, [businessId, refresh]);
 
+  function getItemLabel(item) {
+    if (item.item_type === "SERVICE") return services.find(x => x.id === item.service_id)?.service_name || "Service";
+    return products.find(x => x.id === item.product_id)?.product_name || "Product";
+  }
+
+  function getItemPrice(item) {
+    if (item.item_type === "SERVICE") return number(item.unit_price || services.find(x => x.id === item.service_id)?.selling_price);
+    return number(item.unit_price || products.find(x => x.id === item.product_id)?.sell_per_each || products.find(x => x.id === item.product_id)?.selling_price);
+  }
+
+  function itemTotal(item) {
+    return number(item.quantity) * getItemPrice(item);
+  }
+
+  const billTotal = items.reduce((sum, item) => sum + itemTotal(item), 0);
+  const paidNow = number(form.paid_amount);
+  const billBalance = Math.max(0, billTotal - paidNow);
+
+  function updateItem(index, patch) {
+    setItems(prev => prev.map((item, i) => i === index ? { ...item, ...patch } : item));
+  }
+
+  function addItemRow() {
+    setItems(prev => [...prev, { item_type: "PRODUCT", product_id: "", service_id: "", quantity: "1", unit_price: "" }]);
+  }
+
+  function removeItemRow(index) {
+    setItems(prev => prev.length === 1 ? prev : prev.filter((_, i) => i !== index));
+  }
+
+  function resetBillForm() {
+    setForm({ customer_name: "", customer_phone: "", paid_amount: "0", due_date: "", note: "" });
+    setItems([{ item_type: "PRODUCT", product_id: "", service_id: "", quantity: "1", unit_price: "" }]);
+  }
+
+  function buildStoredNote(lineItems, note) {
+    const payload = lineItems.map(x => ({
+      type: x.item_type,
+      name: getItemLabel(x),
+      quantity: number(x.quantity),
+      unit_price: getItemPrice(x),
+      total: itemTotal(x),
+    }));
+    return `BILL_ITEMS::${JSON.stringify(payload)}${note ? `\n${note}` : ""}`;
+  }
+
+  function parseBillItems(row) {
+    const note = String(row?.note || "");
+    if (note.startsWith("BILL_ITEMS::")) {
+      const firstLine = note.split("\n")[0].replace("BILL_ITEMS::", "");
+      try {
+        return JSON.parse(firstLine);
+      } catch {}
+    }
+    return [{
+      type: row?.product_id ? "PRODUCT" : row?.service_id ? "SERVICE" : "OTHER",
+      name: itemName(row),
+      quantity: row?.sales?.quantity || 1,
+      unit_price: number(row?.original_amount) / Math.max(1, number(row?.sales?.quantity || 1)),
+      total: number(row?.original_amount),
+    }];
+  }
+
+  function printBillWindow(rowOrBill) {
+    const row = rowOrBill.row || rowOrBill;
+    const lineItems = rowOrBill.items || parseBillItems(row);
+    const total = number(row.original_amount ?? lineItems.reduce((a, x) => a + number(x.total), 0));
+    const paid = number(row.paid_amount);
+    const balance = Math.max(0, total - paid);
+    const billNo = String(row.id || Date.now()).slice(-8).toUpperCase();
+    const popup = window.open("", "_blank", "width=760,height=900");
+    if (!popup) { alert("Browser imezuia popup. Ruhusu popups kwa mfumo huu kisha jaribu tena."); return; }
+    const rowsHtml = lineItems.map((x, i) => `<tr><td>${i + 1}</td><td>${escapeHtml(x.name || "-")}</td><td style="text-align:center">${number(x.quantity)}</td><td style="text-align:right">${money(x.unit_price)}</td><td style="text-align:right">${money(x.total)}</td></tr>`).join("");
+    const noteText = String(row.note || "").replace(/^BILL_ITEMS::[^\n]*\n?/, "");
+    popup.document.write(`<!doctype html><html><head><meta charset="utf-8"><title>Bill ${billNo}</title><style>
+      *{box-sizing:border-box}body{font-family:Arial,sans-serif;margin:0;padding:28px;color:#172033;background:#fff}.receipt{max-width:700px;margin:auto}.head{text-align:center;border-bottom:2px solid #172033;padding-bottom:16px;margin-bottom:18px}.logo{max-width:72px;max-height:72px;margin-bottom:8px}.head h1{margin:0 0 6px;font-size:24px}.head p{margin:3px 0;font-size:12px;color:#526074}.bill-meta{display:flex;justify-content:space-between;gap:20px;font-size:12px;margin-bottom:18px}.customer{border:1px solid #dce3ed;border-radius:8px;padding:10px;margin-bottom:18px}.customer strong{display:block;margin-bottom:4px}.customer span{font-size:12px;color:#526074}.items{width:100%;border-collapse:collapse;font-size:12px}.items th,.items td{border-bottom:1px solid #e6eaf0;padding:9px 6px}.items th{background:#f5f7fa;text-align:left}.totals{margin-left:auto;width:300px;margin-top:18px;font-size:13px}.totals div{display:flex;justify-content:space-between;padding:5px 0}.totals .balance{border-top:2px solid #172033;margin-top:5px;padding-top:10px;font-size:17px;font-weight:800}.note{margin-top:20px;border:1px dashed #cbd5e1;padding:10px;font-size:12px}.footer{text-align:center;margin-top:28px;font-size:11px;color:#667085}.stamp{display:inline-block;border:2px solid #b42318;color:#b42318;padding:6px 12px;border-radius:6px;font-weight:800;transform:rotate(-3deg);margin-top:14px}@media print{body{padding:0}.receipt{max-width:none}}
+    </style></head><body><div class="receipt"><div class="head">${business?.logo_url ? `<img class="logo" src="${escapeHtml(business.logo_url)}" alt="logo">` : ""}<h1>${escapeHtml(business?.business_name || "Bless Stationery")}</h1><p>${escapeHtml(business?.address || "")}</p><p>${escapeHtml(business?.phone || "")} ${business?.email ? `· ${escapeHtml(business.email)}` : ""}</p><h2 style="margin:14px 0 0;font-size:18px">BILL YA MKOPO</h2></div><div class="bill-meta"><div><strong>Bill No:</strong> ${billNo}</div><div><strong>Tarehe:</strong> ${formatDate(new Date().toISOString())}</div><div><strong>Due:</strong> ${escapeHtml(row.due_date || "-")}</div></div><div class="customer"><strong>Mteja: ${escapeHtml(row.customer_name || "-")}</strong><span>${escapeHtml(row.customer_phone || "Hakuna simu")}</span></div><table class="items"><thead><tr><th>#</th><th>Kitu / Huduma</th><th style="text-align:center">Qty</th><th style="text-align:right">Bei</th><th style="text-align:right">Jumla</th></tr></thead><tbody>${rowsHtml}</tbody></table><div class="totals"><div><span>Jumla ya Bill</span><strong>${money(total)}</strong></div><div><span>Amelipa</span><strong>${money(paid)}</strong></div><div class="balance"><span>ANAYODAIWA</span><strong>${money(balance)}</strong></div></div>${noteText ? `<div class="note"><strong>Maelezo:</strong><br>${escapeHtml(noteText).replace(/\n/g,"<br>")}</div>` : ""}<div style="text-align:center"><div class="stamp">${balance > 0 ? "MKOPONI" : "IMELIPWA"}</div></div><div class="footer">Asante kwa kufanya biashara na ${escapeHtml(business?.business_name || "Bless Stationery")}.</div></div><script>window.onload=()=>{window.focus();window.print();}</script></body></html>`);
+    popup.document.close();
+  }
+
   async function addDebt(e) {
     e.preventDefault();
-    const original = number(form.amount);
-    const paid = number(form.paid_amount);
-    if (!form.customer_name.trim() || original <= 0) { alert("Weka jina la mteja na kiasi sahihi."); return; }
-    if (paid < 0 || paid > original) { alert("Kiasi alicholipa hakiwezi kuzidi deni."); return; }
+    if (!form.customer_name.trim()) { alert("Weka jina la mteja."); return; }
     if (!form.due_date) { alert("Chagua tarehe ya mwisho ya kulipa."); return; }
+    const validItems = items.filter(x => (x.item_type === "PRODUCT" ? x.product_id : x.service_id) && number(x.quantity) > 0 && getItemPrice(x) > 0);
+    if (!validItems.length) { alert("Ongeza angalau bidhaa/huduma moja yenye kiasi na bei."); return; }
+    if (paidNow < 0 || paidNow > billTotal) { alert("Kiasi alicholipa hakiwezi kuzidi jumla ya bill."); return; }
     setBusy(true);
-    const balance = Math.max(0, original - paid);
-    const { error } = await supabase.from("credit_transactions").insert({
+    const balance = Math.max(0, billTotal - paidNow);
+    const { data, error } = await supabase.from("credit_transactions").insert({
       business_id: businessId,
       customer_name: form.customer_name.trim(),
       customer_phone: form.customer_phone.trim() || null,
-      product_id: form.item_type === "PRODUCT" ? (form.product_id || null) : null,
-      service_id: form.item_type === "SERVICE" ? (form.service_id || null) : null,
-      original_amount: original,
-      paid_amount: paid,
+      product_id: null,
+      service_id: null,
+      original_amount: billTotal,
+      paid_amount: paidNow,
       balance,
-      status: balance <= 0 ? "PAID" : paid > 0 ? "PARTIAL" : "UNPAID",
+      status: balance <= 0 ? "PAID" : paidNow > 0 ? "PARTIAL" : "UNPAID",
       due_date: form.due_date,
-      note: form.note.trim() || null,
+      note: buildStoredNote(validItems, form.note.trim()),
       created_by: staff?.id || null,
-    });
-    if (error) alert(error.message);
-    else {
-      setForm({ customer_name:"", customer_phone:"", product_id:"", service_id:"", item_type:"PRODUCT", amount:"", paid_amount:"0", due_date:"", note:"" });
+    }).select().single();
+    if (error) {
+      alert(error.message);
+    } else {
+      const bill = { ...data, items: validItems.map(x => ({ name: getItemLabel(x), quantity: number(x.quantity), unit_price: getItemPrice(x), total: itemTotal(x) })) };
+      resetBillForm();
       await load();
+      setPrintBill(bill);
     }
     setBusy(false);
   }
@@ -4887,14 +5339,12 @@ function CreditPage({ businessId, staff, refresh }) {
     if (pay <= 0 || pay > number(row.balance)) { alert("Kiasi cha malipo si sahihi."); return; }
     const paid = number(row.paid_amount) + pay;
     const balance = Math.max(0, number(row.original_amount) - paid);
-    const { error } = await supabase.from("credit_transactions").update({
-      paid_amount: paid, balance, status: balance <= 0 ? "PAID" : "PARTIAL", last_payment_at: new Date().toISOString()
-    }).eq("id", row.id).eq("business_id", businessId);
+    const { error } = await supabase.from("credit_transactions").update({ paid_amount: paid, balance, status: balance <= 0 ? "PAID" : "PARTIAL", last_payment_at: new Date().toISOString() }).eq("id", row.id).eq("business_id", businessId);
     if (error) alert(error.message); else { setPaying(null); setPaymentAmount(""); await load(); }
   }
 
   function itemName(x) {
-    return x.sales?.products?.product_name || x.sales?.services?.service_name || products.find(p=>p.id===x.product_id)?.product_name || services.find(s=>s.id===x.service_id)?.service_name || "-";
+    return x.sales?.products?.product_name || x.sales?.services?.service_name || products.find(p=>p.id===x.product_id)?.product_name || services.find(s=>s.id===x.service_id)?.service_name || "Multiple Items";
   }
   function sendReminder(row) {
     if (!row.customer_phone) { alert("Mteja hana namba ya simu."); return; }
@@ -4908,15 +5358,10 @@ function CreditPage({ businessId, staff, refresh }) {
   const totalOriginal = filtered.reduce((a,x)=>a+number(x.original_amount),0);
   const totalPaid = filtered.reduce((a,x)=>a+number(x.paid_amount),0);
   const overdueCount = filtered.filter(x => number(x.balance) > 0 && x.due_date && new Date(`${x.due_date}T23:59:59`) < new Date()).length;
-
-  function creditStatus(row) {
-    if (number(row.balance) <= 0) return "PAID";
-    if (row.due_date && new Date(`${row.due_date}T23:59:59`) < new Date()) return "OVERDUE";
-    return row.status || "UNPAID";
-  }
+  function creditStatus(row) { if (number(row.balance) <= 0) return "PAID"; if (row.due_date && new Date(`${row.due_date}T23:59:59`) < new Date()) return "OVERDUE"; return row.status || "UNPAID"; }
 
   return <div>
-    <PageTitle title="Madeni / Credit" subtitle="Simamia bidhaa na huduma zilizochukuliwa kwa mkopo." />
+    <PageTitle title="Madeni / Credit" subtitle="Tengeneza bill yenye vitu vingi, mpe mteja receipt ya mkopo na fuatilia salio." />
     <div className="stats-grid">
       <StatCard title="Madeni Yote" value={money(totalDebt)} icon="💳" tone="red" />
       <StatCard title="Jumla ya Mikopo" value={money(totalOriginal)} icon="📒" tone="blue" />
@@ -4924,28 +5369,52 @@ function CreditPage({ businessId, staff, refresh }) {
       <StatCard title="Wadaiwa" value={filtered.filter(x=>number(x.balance)>0).length} icon="👥" tone="orange" />
       <StatCard title="Overdue" value={overdueCount} icon="⏰" tone="red" />
     </div>
-    <div className="panel">
-      <div className="panel-header"><div><h3>Ongeza Deni</h3><span>Weka mteja, product/service, kiasi alicholipa na tarehe ya mwisho.</span></div></div>
-      <form onSubmit={addDebt} className="form-grid">
-        <Field label="Jina la Mteja" value={form.customer_name} onChange={v=>setForm({...form,customer_name:v})} required />
-        <Field label="Simu ya Mteja" value={form.customer_phone} onChange={v=>setForm({...form,customer_phone:v})} placeholder="2557XXXXXXXX" />
-        <SelectField label="Aina" value={form.item_type} onChange={v=>setForm({...form,item_type:v,product_id:"",service_id:""})} options={[{value:"PRODUCT",label:"PRODUCT"},{value:"SERVICE",label:"SERVICE"}]} />
-        {form.item_type === "PRODUCT" ? <SelectField label="Product" value={form.product_id} onChange={v=>setForm({...form,product_id:v})} options={products.map(p=>({value:p.id,label:p.product_name}))} /> : <SelectField label="Service" value={form.service_id} onChange={v=>setForm({...form,service_id:v})} options={services.map(s=>({value:s.id,label:s.service_name}))} />}
-        <Field label="Kiasi Jumla" type="number" value={form.amount} onChange={v=>setForm({...form,amount:v})} required />
-        <Field label="Kiasi Alicholipa" type="number" value={form.paid_amount} onChange={v=>setForm({...form,paid_amount:v})} />
-        <Field label="Deni Litalipwa Tarehe" type="date" value={form.due_date} onChange={v=>setForm({...form,due_date:v})} required />
-        <Field label="Maelezo" value={form.note} onChange={v=>setForm({...form,note:v})} />
-        <div className="notice full">Salio: <strong>{money(Math.max(0, number(form.amount)-number(form.paid_amount)))}</strong></div>
-        <div className="form-actions full"><button className="primary-btn" disabled={busy}>{busy ? "Inahifadhi..." : "+ Weka Deni"}</button></div>
+
+    <div className="panel credit-bill-builder">
+      <div className="panel-header"><div><h3>🧾 Tengeneza Bill ya Deni — Multiple Items</h3><span>Mteja anaweza kuchukua bidhaa/huduma nyingi kwenye bill moja.</span></div></div>
+      <form onSubmit={addDebt}>
+        <div className="form-grid">
+          <Field label="Jina la Mteja" value={form.customer_name} onChange={v=>setForm({...form,customer_name:v})} required />
+          <Field label="Simu ya Mteja" value={form.customer_phone} onChange={v=>setForm({...form,customer_phone:v})} placeholder="2557XXXXXXXX" />
+          <Field label="Deni Litalipwa Tarehe" type="date" value={form.due_date} onChange={v=>setForm({...form,due_date:v})} required />
+          <Field label="Kiasi Alicholipa Sasa" type="number" value={form.paid_amount} onChange={v=>setForm({...form,paid_amount:v})} />
+        </div>
+        <div className="bill-items-header"><strong>Vitu vya Mteja</strong><button type="button" className="secondary-btn small-btn" onClick={addItemRow}>+ Ongeza Kitu</button></div>
+        <div className="bill-items-table">
+          <div className="bill-item-row bill-item-head"><span>#</span><span>Aina</span><span>Kitu / Huduma</span><span>Qty</span><span>Bei</span><span>Jumla</span><span></span></div>
+          {items.map((item, index) => {
+            const options = item.item_type === "PRODUCT" ? products.map(p=>({value:p.id,label:p.product_name,price:p.sell_per_each ?? p.selling_price})) : services.map(s=>({value:s.id,label:s.service_name,price:s.selling_price}));
+            const selected = options.find(o => o.value === (item.item_type === "PRODUCT" ? item.product_id : item.service_id));
+            return <div className="bill-item-row" key={index}>
+              <span className="bill-line-no">{index + 1}</span>
+              <select value={item.item_type} onChange={e=>updateItem(index,{item_type:e.target.value,product_id:"",service_id:"",unit_price:""})}><option value="PRODUCT">Product</option><option value="SERVICE">Service</option></select>
+              <select value={item.item_type === "PRODUCT" ? item.product_id : item.service_id} onChange={e=>{ const patch=item.item_type === "PRODUCT" ? {product_id:e.target.value,service_id:""} : {service_id:e.target.value,product_id:""}; const found=options.find(o=>o.value===e.target.value); updateItem(index,{...patch,unit_price:found?.price ?? ""}); }}><option value="">Chagua...</option>{options.map(o=><option key={o.value} value={o.value}>{o.label}</option>)}</select>
+              <input type="number" min="1" step="1" value={item.quantity} onChange={e=>updateItem(index,{quantity:e.target.value})} />
+              <input type="number" min="0" step="0.01" value={item.unit_price} onChange={e=>updateItem(index,{unit_price:e.target.value})} placeholder="Bei" />
+              <strong className="bill-line-total">{money(itemTotal(item))}</strong>
+              <button type="button" className="icon-btn danger-icon" onClick={()=>removeItemRow(index)} disabled={items.length===1}>×</button>
+            </div>;
+          })}
+        </div>
+        <div className="bill-summary-box">
+          <div><span>Jumla ya Bill</span><strong>{money(billTotal)}</strong></div>
+          <div><span>Amelipa Sasa</span><strong>{money(paidNow)}</strong></div>
+          <div className="bill-balance"><span>ANAYODAIWA</span><strong>{money(billBalance)}</strong></div>
+        </div>
+        <div className="field" style={{marginTop:12}}><label>Maelezo / Note</label><textarea rows="2" value={form.note} onChange={e=>setForm({...form,note:e.target.value})} placeholder="Mfano: Vitu vya ofisini, bill ya mwezi..." /></div>
+        <div className="form-actions"><button type="button" className="secondary-btn" onClick={resetBillForm}>Clear</button><button className="primary-btn" disabled={busy}>{busy ? "Inahifadhi..." : "✓ Hifadhi Deni + Tengeneza Bill"}</button></div>
       </form>
     </div>
+
     <div className="panel">
       <div className="toolbar"><input className="search-input" value={search} onChange={e=>setSearch(e.target.value)} placeholder="Tafuta mteja..." /><button className="secondary-btn small-btn" onClick={() => exportToExcel(filtered.map(x=>({Customer:x.customer_name,Phone:x.customer_phone||"",Item:itemName(x),Original:x.original_amount,Paid:x.paid_amount,Balance:x.balance,"Due Date":x.due_date||"",Status:creditStatus(x)})), `Bless-Stationery-Credits-${todayDateInput()}.xlsx`, "Credits")}>⬇ Export</button></div>
-      <div className="table-wrap"><table><thead><tr><th>Mteja</th><th>Product/Service</th><th>Deni</th><th>Amelipa</th><th>Salio</th><th>Due Date</th><th>Status</th><th>Action</th></tr></thead><tbody>
-        {filtered.map(x=><tr key={x.id}><td><strong>{x.customer_name}</strong><br/><small>{x.customer_phone || "-"}</small></td><td>{itemName(x)}</td><td>{money(x.original_amount)}</td><td>{money(x.paid_amount)}</td><td><strong>{money(x.balance)}</strong></td><td>{x.due_date || "-"}</td><td><span className={`status-chip ${creditStatus(x).toLowerCase()}`}>{creditStatus(x)}</span></td><td>{number(x.balance)>0 && <div style={{display:"flex",gap:6,flexWrap:"wrap"}}>{paying===x.id ? <div className="debt-payment-box"><div className="debt-payment-label">Ingiza kiasi alicholipa</div><input type="number" min="1" max={number(x.balance)} step="0.01" value={paymentAmount} onChange={e=>setPaymentAmount(e.target.value)} placeholder="Mfano 10000" /><div className="debt-payment-balance">Salio baada ya malipo: <strong>{money(Math.max(0, number(x.balance) - number(paymentAmount)))}</strong></div><div className="debt-payment-actions"><button className="primary-btn" onClick={()=>payDebt(x)}>Lipa</button><button className="secondary-btn" onClick={()=>{setPaying(null);setPaymentAmount("")}}>X</button></div></div> : <button className="secondary-btn" onClick={()=>{setPaying(x.id);setPaymentAmount("")}}>+ Malipo</button>}<button className="secondary-btn" onClick={()=>sendReminder(x)}>📲 Kumbusha</button></div>}</td></tr>)}
+      <div className="table-wrap"><table><thead><tr><th>Mteja</th><th>Bill / Vitu</th><th>Deni</th><th>Amelipa</th><th>Salio</th><th>Due Date</th><th>Status</th><th>Action</th></tr></thead><tbody>
+        {filtered.map(x=><tr key={x.id}><td><strong>{x.customer_name}</strong><br/><small>{x.customer_phone || "-"}</small></td><td>{itemName(x)}{String(x.note||"").startsWith("BILL_ITEMS::") && <small className="bill-multiple-badge">Multiple Items</small>}</td><td>{money(x.original_amount)}</td><td>{money(x.paid_amount)}</td><td><strong>{money(x.balance)}</strong></td><td>{x.due_date || "-"}</td><td><span className={`status-chip ${creditStatus(x).toLowerCase()}`}>{creditStatus(x)}</span></td><td><div style={{display:"flex",gap:6,flexWrap:"wrap"}}><button className="secondary-btn small-btn" onClick={()=>printBillWindow(x)}>🖨 Print Bill</button>{number(x.balance)>0 && <>{paying===x.id ? <div className="debt-payment-box"><div className="debt-payment-label">Ingiza kiasi alicholipa</div><input type="number" min="1" max={number(x.balance)} step="0.01" value={paymentAmount} onChange={e=>setPaymentAmount(e.target.value)} placeholder="Mfano 10000" /><div className="debt-payment-balance">Salio baada ya malipo: <strong>{money(Math.max(0, number(x.balance) - number(paymentAmount)))}</strong></div><div className="debt-payment-actions"><button className="primary-btn" onClick={()=>payDebt(x)}>Lipa</button><button className="secondary-btn" onClick={()=>{setPaying(null);setPaymentAmount("")}}>X</button></div></div> : <button className="secondary-btn small-btn" onClick={()=>{setPaying(x.id);setPaymentAmount("")}}>+ Malipo</button>}<button className="secondary-btn small-btn" onClick={()=>sendReminder(x)}>📲 Kumbusha</button></>}</div></td></tr>)}
         {!filtered.length && <tr><td colSpan="8">Hakuna madeni yaliyopatikana.</td></tr>}
       </tbody></table></div>
     </div>
+
+    {printBill && <div className="modal-backdrop" onClick={()=>setPrintBill(null)}><div className="modal-card bill-created-modal" onClick={e=>e.stopPropagation()}><div className="panel-header"><div><h3>✅ Bill imehifadhiwa</h3><span>Mteja sasa ana deni la {money(printBill.balance)}.</span></div><button className="icon-btn" onClick={()=>setPrintBill(null)}>×</button></div><div className="bill-preview-summary"><div><span>Mteja</span><strong>{printBill.customer_name}</strong></div><div><span>Jumla</span><strong>{money(printBill.original_amount)}</strong></div><div><span>Amelipa</span><strong>{money(printBill.paid_amount)}</strong></div><div><span>Anayodaiwa</span><strong>{money(printBill.balance)}</strong></div></div><div className="form-actions" style={{marginTop:18}}><button className="secondary-btn" onClick={()=>setPrintBill(null)}>Funga</button><button className="primary-btn" onClick={()=>printBillWindow(printBill)}>🖨 Print Bill ya Mteja</button></div></div></div>}
   </div>;
 }
 
@@ -5479,6 +5948,348 @@ function PasswordField({ label, value, onChange, show, setShow }) {
   );
 }
 
+
+function CustomersPage({ businessId, refresh }) {
+  const [customers, setCustomers] = useState([]);
+  const [credits, setCredits] = useState([]);
+  const [search, setSearch] = useState("");
+  const [selected, setSelected] = useState(null);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => { load(); }, [businessId, refresh]);
+
+  async function load() {
+    if (!businessId) return;
+    setLoading(true);
+    const [{ data: creditRows, error: creditError }, { data: salesRows }] = await Promise.all([
+      supabase.from("credit_transactions").select("*").eq("business_id", businessId).order("created_at", { ascending: false }).limit(2000),
+      supabase.from("sales").select("id,sale_date,sales_total,profit,payment_method,quantity,product_id,service_id").eq("business_id", businessId).order("sale_date", { ascending: false }).limit(5000),
+    ]);
+    if (creditError) {
+      alert(creditError.message);
+      setLoading(false);
+      return;
+    }
+    const rows = creditRows || [];
+    const map = {};
+    rows.forEach((r) => {
+      const key = `${String(r.customer_name || "").trim().toLowerCase()}|${normalizePhone(r.customer_phone)}`;
+      if (!key || key === "|") return;
+      if (!map[key]) {
+        map[key] = {
+          key,
+          name: r.customer_name || "-",
+          phone: r.customer_phone || "",
+          totalDebt: 0,
+          balance: 0,
+          paid: 0,
+          transactions: 0,
+          lastDate: r.created_at || r.due_date || null,
+        };
+      }
+      map[key].totalDebt += number(r.original_amount);
+      map[key].balance += number(r.balance);
+      map[key].paid += number(r.paid_amount);
+      map[key].transactions += 1;
+      if (new Date(r.created_at || 0) > new Date(map[key].lastDate || 0)) map[key].lastDate = r.created_at;
+    });
+    const list = Object.values(map).sort((a, b) => b.balance - a.balance || a.name.localeCompare(b.name));
+    setCustomers(list);
+    setCredits(rows);
+    setSelected((current) => current ? list.find((x) => x.key === current.key) || null : null);
+    setLoading(false);
+  }
+
+  const filtered = customers.filter((c) => {
+    const q = search.trim().toLowerCase();
+    if (!q) return true;
+    return c.name.toLowerCase().includes(q) || String(c.phone).toLowerCase().includes(q);
+  });
+
+  const selectedRows = selected
+    ? credits.filter((r) => {
+        const a = String(r.customer_name || "").trim().toLowerCase();
+        const b = String(selected.name || "").trim().toLowerCase();
+        return a === b && normalizePhone(r.customer_phone) === normalizePhone(selected.phone);
+      })
+    : [];
+
+  function printStatement() {
+    if (!selected) return;
+    const win = window.open("", "_blank", "width=900,height=800");
+    if (!win) { alert("Ruhusu pop-ups kisha ujaribu tena."); return; }
+    const rows = selectedRows.map((r) => `
+      <tr><td>${escapeHtml(formatDate(r.created_at))}</td><td>${escapeHtml(r.note || "Credit")}</td><td class="num">${escapeHtml(money(r.original_amount))}</td><td class="num">${escapeHtml(money(r.paid_amount))}</td><td class="num">${escapeHtml(money(r.balance))}</td><td>${escapeHtml(r.status || "-")}</td></tr>
+    `).join("");
+    win.document.write(`<!doctype html><html><head><meta charset="utf-8"><title>Customer Statement</title><style>body{font-family:Arial;padding:28px;color:#111}h1{margin:0 0 5px}.muted{color:#666}table{width:100%;border-collapse:collapse;margin-top:22px}th,td{border:1px solid #ccc;padding:8px}th{background:#f3f4f6;text-align:left}.num{text-align:right}.summary{margin-top:18px;display:flex;gap:28px}.summary strong{display:block;font-size:18px}@media print{body{padding:0}}</style></head><body><h1>${escapeHtml(selected.name)}</h1><div class="muted">${escapeHtml(selected.phone || "No phone")}</div><div class="summary"><div>Total Credit<strong>${escapeHtml(money(selected.totalDebt))}</strong></div><div>Paid<strong>${escapeHtml(money(selected.paid))}</strong></div><div>Balance<strong>${escapeHtml(money(selected.balance))}</strong></div></div><table><thead><tr><th>Date</th><th>Note</th><th>Debt</th><th>Paid</th><th>Balance</th><th>Status</th></tr></thead><tbody>${rows}</tbody></table><script>window.onload=()=>window.print()</script></body></html>`);
+    win.document.close();
+  }
+
+  if (loading) return <PageLoading />;
+
+  return (
+    <div>
+      <PageTitle title="Customers" subtitle="Wateja, historia ya madeni na salio lao kwa sehemu moja." />
+      <div className="stats-grid small-stats">
+        <StatCard title="Customers" value={customers.length} icon="👥" tone="blue" />
+        <StatCard title="Customers Wenye Deni" value={customers.filter((x) => x.balance > 0).length} icon="💳" tone="red" />
+        <StatCard title="Total Credit" value={money(customers.reduce((a, x) => a + x.totalDebt, 0))} icon="🧾" tone="purple" />
+        <StatCard title="Outstanding" value={money(customers.reduce((a, x) => a + x.balance, 0))} icon="⚠" tone="orange" />
+      </div>
+
+      <div className="panel">
+        <div className="panel-header">
+          <div><h3>Customer Directory</h3><span>Search kwa jina au simu.</span></div>
+          <button className="secondary-btn" onClick={load}>↻ Refresh</button>
+        </div>
+        <input className="customer-search" value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Tafuta mteja..." />
+        <div className="table-wrap">
+          <table>
+            <thead><tr><th>Mteja</th><th>Simu</th><th>Transactions</th><th>Total Credit</th><th>Paid</th><th>Balance</th><th>Last Activity</th><th>Action</th></tr></thead>
+            <tbody>
+              {filtered.map((c) => (
+                <tr key={c.key}>
+                  <td><strong>{c.name}</strong></td><td>{c.phone || "-"}</td><td>{c.transactions}</td><td>{money(c.totalDebt)}</td><td>{money(c.paid)}</td><td><strong className={c.balance > 0 ? "stock-danger" : "stock-ok"}>{money(c.balance)}</strong></td><td>{formatDate(c.lastDate)}</td>
+                  <td><button className="secondary-btn small-btn" onClick={() => setSelected(c)}>View</button></td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+        {!filtered.length && <EmptyState text="Hakuna customer anayefanana na search yako." />}
+      </div>
+
+      {selected && (
+        <div className="panel customer-detail-panel">
+          <div className="panel-header">
+            <div><h3>{selected.name}</h3><span>{selected.phone || "No phone"}</span></div>
+            <div className="panel-header-actions"><button className="secondary-btn" onClick={printStatement}>🖨 Print Statement</button><button className="text-btn" onClick={() => setSelected(null)}>Funga</button></div>
+          </div>
+          <div className="stats-grid small-stats">
+            <StatCard title="Total Credit" value={money(selected.totalDebt)} icon="🧾" />
+            <StatCard title="Paid" value={money(selected.paid)} icon="✓" tone="green" />
+            <StatCard title="Outstanding" value={money(selected.balance)} icon="💳" tone="red" />
+            <StatCard title="Transactions" value={selected.transactions} icon="↕" tone="purple" />
+          </div>
+          <div className="table-wrap">
+            <table><thead><tr><th>Date</th><th>Note</th><th>Debt</th><th>Paid</th><th>Balance</th><th>Due Date</th><th>Status</th></tr></thead>
+              <tbody>{selectedRows.map((r) => <tr key={r.id}><td>{formatDate(r.created_at)}</td><td>{r.note || "Credit"}</td><td>{money(r.original_amount)}</td><td>{money(r.paid_amount)}</td><td><strong>{money(r.balance)}</strong></td><td>{r.due_date || "-"}</td><td>{r.status || "-"}</td></tr>)}</tbody>
+            </table>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function AnalyticsPage({ businessId, refresh }) {
+  const [from, setFrom] = useState(todayDateInput());
+  const [to, setTo] = useState(todayDateInput());
+  const [data, setData] = useState({ sales: [], expenses: [], deposits: [], credits: [] });
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => { load(); }, [businessId, refresh]);
+
+  async function load() {
+    if (!businessId) return;
+    setLoading(true);
+    const [salesRes, expenseRes, depositRes, creditRes] = await Promise.all([
+      supabase.from("sales").select("*").eq("business_id", businessId).order("sale_date", { ascending: false }).limit(5000),
+      supabase.from("expenses").select("*").eq("business_id", businessId).order("expense_date", { ascending: false }).limit(5000),
+      supabase.from("deposits").select("*").eq("business_id", businessId).order("deposit_date", { ascending: false }).limit(5000),
+      supabase.from("credit_transactions").select("*").eq("business_id", businessId).order("created_at", { ascending: false }).limit(5000),
+    ]);
+    if (salesRes.error) alert(salesRes.error.message);
+    if (expenseRes.error) alert(expenseRes.error.message);
+    if (depositRes.error) alert(depositRes.error.message);
+    if (creditRes.error) alert(creditRes.error.message);
+    setData({ sales: salesRes.data || [], expenses: expenseRes.data || [], deposits: depositRes.data || [], credits: creditRes.data || [] });
+    setLoading(false);
+  }
+
+  const start = new Date(`${from}T00:00:00`);
+  const end = new Date(`${to}T23:59:59.999`);
+  const inRange = (value) => { const d = new Date(value); return d >= start && d <= end; };
+  const sales = data.sales.filter((x) => inRange(x.sale_date));
+  const expenses = data.expenses.filter((x) => inRange(x.expense_date));
+  const deposits = data.deposits.filter((x) => inRange(x.deposit_date));
+  const salesTotal = sales.reduce((a, x) => a + number(x.sales_total), 0);
+  const grossProfit = sales.reduce((a, x) => a + number(x.profit), 0);
+  const expenseTotal = expenses.reduce((a, x) => a + number(x.amount), 0);
+  const netProfit = grossProfit - expenseTotal;
+  const creditSales = sales.filter((x) => x.payment_method === "CREDIT").reduce((a, x) => a + number(x.sales_total), 0);
+  const cashSales = sales.filter((x) => x.payment_method === "CASH").reduce((a, x) => a + number(x.sales_total), 0);
+  const outstanding = data.credits.reduce((a, x) => a + number(x.balance), 0);
+  const depositTotal = deposits.reduce((a, x) => a + number(x.amount), 0);
+  const maxDay = Math.max(1, ...Array.from({ length: 7 }, (_, i) => {
+    const d = new Date(); d.setHours(0,0,0,0); d.setDate(d.getDate() - (6 - i));
+    const next = new Date(d); next.setDate(next.getDate() + 1);
+    return data.sales.filter((x) => new Date(x.sale_date) >= d && new Date(x.sale_date) < next).reduce((a,x)=>a+number(x.sales_total),0);
+  }));
+  const paymentMap = {};
+  sales.forEach((x) => { paymentMap[x.payment_method || "OTHER"] = (paymentMap[x.payment_method || "OTHER"] || 0) + number(x.sales_total); });
+
+  function printReport() {
+    const win = window.open("", "_blank", "width=1000,height=800");
+    if (!win) { alert("Ruhusu pop-ups kisha ujaribu tena."); return; }
+    win.document.write(`<!doctype html><html><head><meta charset="utf-8"><title>Business Profit & Loss</title><style>body{font-family:Arial;padding:28px;color:#111}h1{margin:0 0 5px}.muted{color:#666}.cards{display:flex;gap:12px;margin:18px 0}.card{border:1px solid #ddd;padding:12px;flex:1}.card strong{display:block;font-size:18px;margin-top:5px}table{width:100%;border-collapse:collapse;margin-top:18px}th,td{border:1px solid #ccc;padding:8px;text-align:left}.num{text-align:right}th{background:#f3f4f6}@media print{body{padding:0}}</style></head><body><h1>Bless Stationery - Profit & Loss</h1><div class="muted">Period: ${escapeHtml(from)} to ${escapeHtml(to)}</div><div class="cards"><div class="card">Sales<strong>${escapeHtml(money(salesTotal))}</strong></div><div class="card">Gross Profit<strong>${escapeHtml(money(grossProfit))}</strong></div><div class="card">Expenses<strong>${escapeHtml(money(expenseTotal))}</strong></div><div class="card">Net Profit<strong>${escapeHtml(money(netProfit))}</strong></div></div><table><thead><tr><th>Metric</th><th class="num">Amount</th></tr></thead><tbody><tr><td>Cash Sales</td><td class="num">${escapeHtml(money(cashSales))}</td></tr><tr><td>Credit Sales</td><td class="num">${escapeHtml(money(creditSales))}</td></tr><tr><td>Deposits</td><td class="num">${escapeHtml(money(depositTotal))}</td></tr><tr><td>Outstanding Credit</td><td class="num">${escapeHtml(money(outstanding))}</td></tr></tbody></table><script>window.onload=()=>window.print()</script></body></html>`);
+    win.document.close();
+  }
+
+  if (loading) return <PageLoading />;
+  return (
+    <div>
+      <PageTitle title="Business Analytics" subtitle="Profit & Loss, payment mix na performance ya biashara." />
+      <div className="panel analytics-filter">
+        <div className="form-grid">
+          <Field label="From" type="date" value={from} onChange={setFrom} />
+          <Field label="To" type="date" value={to} onChange={setTo} />
+          <div className="form-actions"><button className="secondary-btn" onClick={load}>↻ Refresh</button><button className="primary-btn" onClick={printReport}>🖨 Print Report</button></div>
+        </div>
+      </div>
+      <div className="stats-grid">
+        <StatCard title="Sales" value={money(salesTotal)} icon="🛒" tone="blue" />
+        <StatCard title="Gross Profit" value={money(grossProfit)} icon="📈" tone="green" />
+        <StatCard title="Expenses" value={money(expenseTotal)} icon="💸" tone="red" />
+        <StatCard title="Net Profit" value={money(netProfit)} icon="💎" tone={netProfit >= 0 ? "green" : "red"} />
+      </div>
+      <div className="stats-grid small-stats">
+        <StatCard title="Cash Sales" value={money(cashSales)} icon="💵" />
+        <StatCard title="Credit Sales" value={money(creditSales)} icon="💳" tone="purple" />
+        <StatCard title="Deposits" value={money(depositTotal)} icon="🏦" tone="blue" />
+        <StatCard title="Outstanding Debt" value={money(outstanding)} icon="⚠" tone="orange" />
+      </div>
+      <div className="dashboard-grid">
+        <div className="panel">
+          <div className="panel-header"><div><h3>Sales - Last 7 Days</h3><span>Muonekano wa haraka wa sales.</span></div></div>
+          <div className="analytics-bars">
+            {Array.from({ length: 7 }, (_, i) => {
+              const d = new Date(); d.setHours(0,0,0,0); d.setDate(d.getDate() - (6 - i));
+              const next = new Date(d); next.setDate(next.getDate()+1);
+              const total = data.sales.filter((x) => new Date(x.sale_date) >= d && new Date(x.sale_date) < next).reduce((a,x)=>a+number(x.sales_total),0);
+              return <div className="analytics-bar-row" key={d.toISOString()}><span>{d.toLocaleDateString("en-TZ", { weekday: "short" })}</span><div className="analytics-bar-track"><div className="analytics-bar-fill" style={{ width: `${Math.min(100, total / maxDay * 100)}%` }} /></div><strong>{money(total)}</strong></div>;
+            })}
+          </div>
+        </div>
+        <div className="panel">
+          <div className="panel-header"><div><h3>Payment Mix</h3><span>Sales kwa payment method.</span></div></div>
+          <div className="mini-table">
+            {Object.entries(paymentMap).sort((a,b)=>b[1]-a[1]).map(([method,total]) => <div className="mini-row" key={method}><div><strong>{method}</strong><span>{sales.length} sales range</span></div><strong>{money(total)}</strong></div>)}
+          </div>
+          {!Object.keys(paymentMap).length && <EmptyState text="Hakuna sales kwenye kipindi hiki." />}
+        </div>
+      </div>
+      <div className="panel">
+        <div className="panel-header"><div><h3>Expense Breakdown</h3><span>{expenses.length} expense records</span></div></div>
+        <div className="mini-table">
+          {Object.entries(expenses.reduce((acc, x) => { const k = x.category || "Other"; acc[k] = (acc[k] || 0) + number(x.amount); return acc; }, {})).sort((a,b)=>b[1]-a[1]).map(([cat,total]) => <div className="mini-row" key={cat}><div><strong>{cat}</strong><span>Expense category</span></div><strong>{money(total)}</strong></div>)}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function CashClosingPage({ businessId, refresh }) {
+  const [date, setDate] = useState(todayDateInput());
+  const [actualCash, setActualCash] = useState("");
+  const [records, setRecords] = useState({ sales: [], expenses: [], deposits: [], credits: [] });
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => { load(); }, [businessId, refresh, date]);
+  useEffect(() => {
+    try {
+      const saved = localStorage.getItem(`bless_cash_count_${businessId}_${date}`);
+      setActualCash(saved || "");
+    } catch {}
+  }, [businessId, date]);
+
+  async function load() {
+    if (!businessId) return;
+    setLoading(true);
+    const start = `${date}T00:00:00`;
+    const end = `${date}T23:59:59.999`;
+    const [salesRes, expenseRes, depositRes, creditRes] = await Promise.all([
+      supabase.from("sales").select("*").eq("business_id", businessId).gte("sale_date", start).lte("sale_date", end),
+      supabase.from("expenses").select("*").eq("business_id", businessId).gte("expense_date", start).lte("expense_date", end),
+      supabase.from("deposits").select("*").eq("business_id", businessId).gte("deposit_date", start).lte("deposit_date", end),
+      supabase.from("credit_transactions").select("*").eq("business_id", businessId),
+    ]);
+    if (salesRes.error) alert(salesRes.error.message);
+    if (expenseRes.error) alert(expenseRes.error.message);
+    if (depositRes.error) alert(depositRes.error.message);
+    setRecords({ sales: salesRes.data || [], expenses: expenseRes.data || [], deposits: depositRes.data || [], credits: creditRes.data || [] });
+    setLoading(false);
+  }
+
+  const cashSales = records.sales.filter((x) => x.payment_method === "CASH").reduce((a,x)=>a+number(x.sales_total),0);
+  const creditPaidToday = records.credits.filter((x) => String(x.created_at || "").slice(0,10) === date).reduce((a,x)=>a+number(x.paid_amount),0);
+  const cashExpenses = records.expenses.reduce((a,x)=>a+number(x.amount),0);
+  const cashDeposits = records.deposits.filter((x) => String(x.method || "").toUpperCase() === "CASH").reduce((a,x)=>a+number(x.amount),0);
+  const knownMovement = cashSales + creditPaidToday - cashExpenses - cashDeposits;
+  const difference = actualCash === "" ? null : number(actualCash) - knownMovement;
+  const debtPaymentsAll = records.credits.filter((x) => String(x.last_payment_at || "").slice(0,10) === date).reduce((a,x)=>a+number(x.paid_amount),0);
+
+  function saveCount(value) {
+    setActualCash(value);
+    try { localStorage.setItem(`bless_cash_count_${businessId}_${date}`, value); } catch {}
+  }
+
+  function printClosing() {
+    const win = window.open("", "_blank", "width=900,height=800");
+    if (!win) { alert("Ruhusu pop-ups kisha ujaribu tena."); return; }
+    win.document.write(`<!doctype html><html><head><meta charset="utf-8"><title>Daily Cash Closing</title><style>body{font-family:Arial;padding:28px;color:#111}h1{margin:0}.muted{color:#666}.grid{display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-top:20px}.card{border:1px solid #ddd;padding:12px}.card strong{display:block;font-size:18px;margin-top:5px}.total{font-size:22px;font-weight:800;margin-top:20px;padding:14px;border:2px solid #222}@media print{body{padding:0}}</style></head><body><h1>Bless Stationery</h1><div class="muted">Daily Cash Closing — ${escapeHtml(date)}</div><div class="grid"><div class="card">Cash Sales<strong>${escapeHtml(money(cashSales))}</strong></div><div class="card">Credit Paid Today<strong>${escapeHtml(money(creditPaidToday))}</strong></div><div class="card">Expenses<strong>${escapeHtml(money(cashExpenses))}</strong></div><div class="card">Cash Deposits<strong>${escapeHtml(money(cashDeposits))}</strong></div></div><div class="total">Known Cash Movement: ${escapeHtml(money(knownMovement))}<br>Actual Cash Count: ${escapeHtml(money(actualCash))}<br>Difference: ${escapeHtml(difference === null ? "-" : money(difference))}</div><p>Note: Mfumo unahesabu cash movement kutokana na records zilizopo. Debt payments za zamani zinahitaji payment history table ili ziweze kuhesabiwa kwa usahihi wa siku.</p><script>window.onload=()=>window.print()</script></body></html>`);
+    win.document.close();
+  }
+
+  if (loading) return <PageLoading />;
+  return (
+    <div>
+      <PageTitle title="Daily Cash Closing" subtitle="Funga siku, linganisha cash iliyotarajiwa na cash uliyo-count." />
+      <div className="panel"><div className="form-grid"><Field label="Closing Date" type="date" value={date} onChange={setDate} /><Field label="Actual Cash Count" type="number" value={actualCash} onChange={saveCount} placeholder="Ingiza cash uliyo-count" /><div className="form-actions"><button className="secondary-btn" onClick={load}>↻ Refresh</button><button className="primary-btn" onClick={printClosing}>🖨 Print Closing</button></div></div></div>
+      <div className="stats-grid">
+        <StatCard title="Cash Sales" value={money(cashSales)} icon="💵" tone="blue" />
+        <StatCard title="Credit Paid Today" value={money(creditPaidToday)} icon="💳" tone="green" />
+        <StatCard title="Expenses" value={money(cashExpenses)} icon="💸" tone="red" />
+        <StatCard title="Cash Deposits" value={money(cashDeposits)} icon="🏦" tone="purple" />
+      </div>
+      <div className="panel cash-closing-summary">
+        <div><span>Known Cash Movement</span><strong>{money(knownMovement)}</strong></div>
+        <div><span>Actual Cash Count</span><strong>{actualCash === "" ? "-" : money(actualCash)}</strong></div>
+        <div><span>Difference</span><strong className={difference === null ? "" : difference === 0 ? "stock-ok" : "stock-danger"}>{difference === null ? "-" : money(difference)}</strong></div>
+      </div>
+      {debtPaymentsAll > 0 && <div className="notice">Kumbuka: kuna records zenye <strong>last_payment_at</strong> tarehe hii. Mfumo wa sasa hauna payment-history table, kwa hiyo hatutaki kuzidisha hesabu ya cash kwa kutumia paid_amount ya cumulative.</div>}
+    </div>
+  );
+}
+
+function OptionalToolsPage({ businessId }) {
+  const [kind, setKind] = useState("suppliers");
+  const [status, setStatus] = useState("");
+
+  async function checkTable(tableName) {
+    setStatus("Inakagua database...");
+    const { error } = await supabase.from(tableName).select("id").eq("business_id", businessId).limit(1);
+    if (error) setStatus(`Table '${tableName}' bado haijawekwa kwenye Supabase. UI iko tayari, lakini tunahitaji SQL ya database kabla ya kuitumia live.`);
+    else setStatus(`Table '${tableName}' ipo na iko tayari kutumika.`);
+  }
+
+  const info = kind === "suppliers"
+    ? { title: "Suppliers & Purchases", table: "suppliers", text: "Hifadhi suppliers, purchase orders, gharama za manunuzi na bidhaa zinazoingia." }
+    : { title: "Audit Log", table: "audit_logs", text: "Hifadhi nani alifanya action gani, lini na kwenye record gani." };
+
+  return (
+    <div>
+      <PageTitle title={info.title} subtitle="Module hii imeandaliwa bila kuvunja schema yako ya sasa." />
+      <div className="panel">
+        <div className="segmented-control"><button className={kind === "suppliers" ? "active" : ""} onClick={() => { setKind("suppliers"); setStatus(""); }}>Suppliers & Purchases</button><button className={kind === "audit" ? "active" : ""} onClick={() => { setKind("audit"); setStatus(""); }}>Audit Log</button></div>
+        <div className="optional-module-card"><div className="optional-module-icon">{kind === "suppliers" ? "🚚" : "🛡"}</div><div><h3>{info.title}</h3><p>{info.text}</p><button className="primary-btn" onClick={() => checkTable(info.table)}>Check Database Setup</button></div></div>
+        {status && <div className="notice" style={{ marginTop: 16 }}>{status}</div>}
+        <div className="notice" style={{ marginTop: 16 }}><strong>Kwa nini sijaweka fake data?</strong><br />Module hizi zinahitaji tables mpya za Supabase. Sitaki App.jsx ianze ku-crash kwa sababu ya table ambazo hazipo. Ukiniambia tuendelee na module hii, nitakupa SQL yake kwanza, halafu tuiunganishe kabisa.</div>
+      </div>
+    </div>
+  );
+}
+
 function PageTitle({ title, subtitle, button, onClick }) {
   return (
     <div className="page-title">
@@ -5542,6 +6353,631 @@ function PageLoading() {
     <div className="page-loading">
       <div className="spinner" />
       <p>Inapakia data...</p>
+    </div>
+  );
+}
+
+
+
+function CustomerCreditsPage({ businessId, staff, refresh }) {
+  const [rows, setRows] = useState([]);
+  const [search, setSearch] = useState("");
+  const [loading, setLoading] = useState(true);
+  const [selected, setSelected] = useState(null);
+  const [useAmount, setUseAmount] = useState("");
+  const [busy, setBusy] = useState(false);
+
+  useEffect(() => { load(); }, [businessId, refresh]);
+
+  async function load() {
+    if (!businessId) return;
+    setLoading(true);
+    const { data, error } = await supabase
+      .from("customer_credits")
+      .select("*")
+      .eq("business_id", businessId)
+      .order("created_at", { ascending: false });
+    if (error) alert(error.message);
+    setRows(data || []);
+    setLoading(false);
+  }
+
+  async function useCredit(row) {
+    const amount = number(useAmount);
+    if (amount <= 0 || amount > number(row.balance)) {
+      alert("Kiasi cha Customer Credit si sahihi.");
+      return;
+    }
+    setBusy(true);
+    const used = number(row.used_amount) + amount;
+    const balance = Math.max(0, number(row.original_amount) - used);
+    const status = balance <= 0 ? "USED" : "PARTIAL";
+
+    const { error: updateError } = await supabase
+      .from("customer_credits")
+      .update({ used_amount: used, status, updated_at: new Date().toISOString() })
+      .eq("id", row.id)
+      .eq("business_id", businessId);
+
+    if (updateError) {
+      alert(updateError.message);
+      setBusy(false);
+      return;
+    }
+
+    const { error: txnError } = await supabase.from("customer_credit_transactions").insert({
+      business_id: businessId,
+      customer_credit_id: row.id,
+      transaction_type: "USE",
+      amount,
+      note: "Customer Credit imetumika",
+      staff_id: staff?.id || null,
+      created_by: staff?.id || null,
+    });
+    if (txnError) console.error(txnError);
+
+    setSelected(null);
+    setUseAmount("");
+    setBusy(false);
+    await load();
+  }
+
+  const available = rows.filter((x) => number(x.balance) > 0);
+  const filtered = rows.filter((x) => {
+    const q = search.trim().toLowerCase();
+    return !q || String(x.customer_name || "").toLowerCase().includes(q) || String(x.customer_phone || "").includes(q);
+  });
+  const totalOriginal = rows.reduce((a, x) => a + number(x.original_amount), 0);
+  const totalUsed = rows.reduce((a, x) => a + number(x.used_amount), 0);
+  const totalBalance = rows.reduce((a, x) => a + number(x.balance), 0);
+
+  if (loading) return <PageLoading />;
+
+  return (
+    <div>
+      <PageTitle title="Customer Credits" subtitle="Change ya wateja na salio lao linaloweza kutumika kwenye manunuzi yajayo." />
+      <div className="stats-grid small-stats">
+        <StatCard title="Credit Zote" value={money(totalOriginal)} icon="💰" tone="blue" />
+        <StatCard title="Zimetumika" value={money(totalUsed)} icon="↘" tone="purple" />
+        <StatCard title="Credit Inayopatikana" value={money(totalBalance)} icon="✓" tone="green" />
+        <StatCard title="Wateja Wenye Credit" value={new Set(available.map((x) => `${x.customer_name}|${x.customer_phone || ""}`)).size} icon="👥" tone="orange" />
+      </div>
+
+      <div className="panel">
+        <div className="panel-header">
+          <div><h3>Customer Credit Ledger</h3><span>Change inaingia hapa moja kwa moja baada ya cash sale yenye malipo yanayozidi total.</span></div>
+          <button className="secondary-btn" onClick={load}>↻ Refresh</button>
+        </div>
+        <div className="toolbar">
+          <input className="search-input" value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Tafuta mteja au simu..." />
+          <button className="secondary-btn small-btn" onClick={() => exportToExcel(filtered.map(x => ({
+            Customer: x.customer_name, Phone: x.customer_phone || "", Original: x.original_amount, Used: x.used_amount, Balance: x.balance, Status: x.status, Date: formatDate(x.created_at)
+          })), `Bless-Stationery-Customer-Credits-${todayDateInput()}.xlsx`, "Customer Credits")}>⬇ Export</button>
+        </div>
+        <div className="table-wrap">
+          <table>
+            <thead><tr><th>Mteja</th><th>Credit ya Mwanzo</th><th>Imetumika</th><th>Salio</th><th>Status</th><th>Tarehe</th><th>Action</th></tr></thead>
+            <tbody>
+              {filtered.map((x) => (
+                <tr key={x.id}>
+                  <td><strong>{x.customer_name}</strong><br/><small>{x.customer_phone || "-"}</small></td>
+                  <td>{money(x.original_amount)}</td>
+                  <td>{money(x.used_amount)}</td>
+                  <td><strong className={number(x.balance) > 0 ? "stock-ok" : "muted"}>{money(x.balance)}</strong></td>
+                  <td><span className={`status-chip ${String(x.status || "").toLowerCase()}`}>{x.status}</span></td>
+                  <td>{formatDate(x.created_at)}</td>
+                  <td>{number(x.balance) > 0 && <button className="secondary-btn small-btn" onClick={() => { setSelected(x); setUseAmount(""); }}>Tumia Credit</button>}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+        {!filtered.length && <EmptyState text="Hakuna Customer Credit iliyopatikana." />}
+      </div>
+
+      {selected && (
+        <div className="modal-backdrop" onClick={() => setSelected(null)}>
+          <div className="modal-card" onClick={(e) => e.stopPropagation()}>
+            <div className="panel-header">
+              <div><h3>Tumia Customer Credit</h3><span>{selected.customer_name} — Salio {money(selected.balance)}</span></div>
+              <button className="icon-btn" onClick={() => setSelected(null)}>×</button>
+            </div>
+            <Field label="Kiasi cha kutumia" type="number" value={useAmount} onChange={setUseAmount} min="0.01" max={number(selected.balance)} />
+            <div className="notice" style={{ marginTop: 12 }}>Salio litakalobaki: <strong>{money(Math.max(0, number(selected.balance) - number(useAmount)))}</strong></div>
+            <div className="form-actions" style={{ marginTop: 16 }}>
+              <button className="secondary-btn" onClick={() => setSelected(null)}>Cancel</button>
+              <button className="primary-btn" disabled={busy} onClick={() => useCredit(selected)}>{busy ? "Inahifadhi..." : "Thibitisha Kutumia"}</button>
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function PayablesPage({ businessId, staff, refresh }) {
+  const [rows, setRows] = useState([]);
+  const [payments, setPayments] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [busy, setBusy] = useState(false);
+  const [search, setSearch] = useState("");
+  const [paying, setPaying] = useState(null);
+  const [paymentAmount, setPaymentAmount] = useState("");
+  const [form, setForm] = useState({
+    creditor_name: "",
+    creditor_phone: "",
+    creditor_type: "SUPPLIER",
+    original_amount: "",
+    paid_amount: "0",
+    due_date: "",
+    note: "",
+  });
+
+  async function load() {
+    setLoading(true);
+    const [{ data, error }, { data: paymentRows }] = await Promise.all([
+      supabase
+        .from("payables")
+        .select("*")
+        .eq("business_id", businessId)
+        .order("created_at", { ascending: false }),
+      supabase
+        .from("payable_payments")
+        .select("*")
+        .eq("business_id", businessId)
+        .order("created_at", { ascending: false }),
+    ]);
+
+    if (error) alert(error.message);
+    setRows(data || []);
+    setPayments(paymentRows || []);
+    setLoading(false);
+  }
+
+  useEffect(() => {
+    if (businessId) load();
+  }, [businessId, refresh]);
+
+  async function addPayable(e) {
+    e.preventDefault();
+
+    const original = number(form.original_amount);
+    const paid = number(form.paid_amount);
+
+    if (!form.creditor_name.trim() || original <= 0) {
+      alert("Weka jina la mtu/supplier na kiasi sahihi.");
+      return;
+    }
+
+    if (paid < 0 || paid > original) {
+      alert("Kiasi ulicholipa hakiwezi kuzidi deni.");
+      return;
+    }
+
+    setBusy(true);
+
+    const balance = Math.max(0, original - paid);
+    const { data, error } = await supabase
+      .from("payables")
+      .insert({
+        business_id: businessId,
+        creditor_name: form.creditor_name.trim(),
+        creditor_phone: form.creditor_phone.trim() || null,
+        creditor_type: form.creditor_type,
+        original_amount: original,
+        paid_amount: paid,
+        status: balance <= 0 ? "PAID" : paid > 0 ? "PARTIAL" : "UNPAID",
+        due_date: form.due_date || null,
+        note: form.note.trim() || null,
+        staff_id: staff?.id || null,
+        created_by: staff?.id || null,
+      })
+      .select()
+      .single();
+
+    if (error) {
+      alert(error.message);
+    } else {
+      if (paid > 0 && data?.id) {
+        await supabase.from("payable_payments").insert({
+          business_id: businessId,
+          payable_id: data.id,
+          payment_date: todayDateInput(),
+          amount: paid,
+          method: "CASH",
+          note: "Malipo ya mwanzo wakati wa kuingiza deni.",
+          staff_id: staff?.id || null,
+          created_by: staff?.id || null,
+        });
+      }
+
+      setForm({
+        creditor_name: "",
+        creditor_phone: "",
+        creditor_type: "SUPPLIER",
+        original_amount: "",
+        paid_amount: "0",
+        due_date: "",
+        note: "",
+      });
+      await load();
+    }
+
+    setBusy(false);
+  }
+
+  async function payPayable(row) {
+    const pay = number(paymentAmount);
+
+    if (pay <= 0 || pay > number(row.balance)) {
+      alert("Kiasi cha malipo si sahihi.");
+      return;
+    }
+
+    const paid = number(row.paid_amount) + pay;
+    const balance = Math.max(0, number(row.original_amount) - paid);
+    const status = balance <= 0 ? "PAID" : "PARTIAL";
+
+    setBusy(true);
+
+    const { error } = await supabase
+      .from("payables")
+      .update({
+        paid_amount: paid,
+        status,
+        updated_at: new Date().toISOString(),
+      })
+      .eq("id", row.id)
+      .eq("business_id", businessId);
+
+    if (error) {
+      alert(error.message);
+      setBusy(false);
+      return;
+    }
+
+    const { error: paymentError } = await supabase
+      .from("payable_payments")
+      .insert({
+        business_id: businessId,
+        payable_id: row.id,
+        payment_date: todayDateInput(),
+        amount: pay,
+        method: "CASH",
+        staff_id: staff?.id || null,
+        created_by: staff?.id || null,
+      });
+
+    if (paymentError) alert(paymentError.message);
+
+    setPaying(null);
+    setPaymentAmount("");
+    await load();
+    setBusy(false);
+  }
+
+  const filtered = rows.filter((row) => {
+    const q = search.trim().toLowerCase();
+    if (!q) return true;
+    return (
+      String(row.creditor_name || "").toLowerCase().includes(q) ||
+      String(row.creditor_phone || "").toLowerCase().includes(q) ||
+      String(row.creditor_type || "").toLowerCase().includes(q)
+    );
+  });
+
+  const totalOriginal = rows.reduce((a, x) => a + number(x.original_amount), 0);
+  const totalPaid = rows.reduce((a, x) => a + number(x.paid_amount), 0);
+  const totalBalance = rows.reduce((a, x) => a + number(x.balance), 0);
+
+  return (
+    <div>
+      <PageTitle
+        title="Madeni Yetu"
+        subtitle="Watu, suppliers au huduma tunazodaiwa."
+      />
+
+      <div className="stats-grid small-stats">
+        <StatCard title="Madeni Yote" value={money(totalOriginal)} icon="📌" tone="red" />
+        <StatCard title="Tuliyolipa" value={money(totalPaid)} icon="💵" tone="green" />
+        <StatCard title="Tunadaiwa" value={money(totalBalance)} icon="⚠️" tone="orange" />
+        <StatCard title="Wanaotudai" value={rows.filter(x => number(x.balance) > 0).length} icon="👤" tone="purple" />
+      </div>
+
+      <div className="panel form-panel">
+        <div className="panel-header">
+          <div>
+            <h3>Ongeza Mtu/Supplier Anayetudai</h3>
+            <span>Weka deni tunalopaswa kulipa.</span>
+          </div>
+        </div>
+
+        <form onSubmit={addPayable}>
+          <div className="form-grid">
+            <div className="field">
+              <label>Jina *</label>
+              <input
+                value={form.creditor_name}
+                onChange={(e) => setForm({ ...form, creditor_name: e.target.value })}
+                placeholder="Mfano: ABC Supplies"
+              />
+            </div>
+
+            <div className="field">
+              <label>Simu</label>
+              <input
+                value={form.creditor_phone}
+                onChange={(e) => setForm({ ...form, creditor_phone: e.target.value })}
+                placeholder="07XXXXXXXX"
+              />
+            </div>
+
+            <div className="field">
+              <label>Aina</label>
+              <select
+                value={form.creditor_type}
+                onChange={(e) => setForm({ ...form, creditor_type: e.target.value })}
+              >
+                <option value="SUPPLIER">Supplier</option>
+                <option value="PERSON">Mtu</option>
+                <option value="SERVICE">Huduma</option>
+                <option value="OTHER">Nyingine</option>
+              </select>
+            </div>
+
+            <div className="field">
+              <label>Kiasi cha Deni *</label>
+              <input
+                type="number"
+                min="0"
+                value={form.original_amount}
+                onChange={(e) => setForm({ ...form, original_amount: e.target.value })}
+                placeholder="0"
+              />
+            </div>
+
+            <div className="field">
+              <label>Kiasi Tulicholipa</label>
+              <input
+                type="number"
+                min="0"
+                value={form.paid_amount}
+                onChange={(e) => setForm({ ...form, paid_amount: e.target.value })}
+              />
+            </div>
+
+            <div className="field">
+              <label>Tarehe ya Kulipa</label>
+              <input
+                type="date"
+                value={form.due_date}
+                onChange={(e) => setForm({ ...form, due_date: e.target.value })}
+              />
+            </div>
+
+            <div className="field full">
+              <label>Maelezo</label>
+              <textarea
+                rows="2"
+                value={form.note}
+                onChange={(e) => setForm({ ...form, note: e.target.value })}
+                placeholder="Maelezo ya deni..."
+              />
+            </div>
+
+            <div className="field">
+              <label>Salio Litakalobaki</label>
+              <input
+                value={money(Math.max(0, number(form.original_amount) - number(form.paid_amount)))}
+                readOnly
+              />
+            </div>
+
+            <div className="field full form-actions">
+              <button className="primary-btn" disabled={busy}>
+                {busy ? "Ina-save..." : "＋ Hifadhi Deni"}
+              </button>
+            </div>
+          </div>
+        </form>
+      </div>
+
+      <div className="panel">
+        <div className="panel-header">
+          <div>
+            <h3>Orodha ya Wanaotudai</h3>
+            <span>Madeni ambayo biashara yako inapaswa kulipa.</span>
+          </div>
+          <button
+            className="secondary-btn small-btn"
+            onClick={() =>
+              exportToExcel(
+                filtered.map((x) => ({
+                  Jina: x.creditor_name,
+                  Simu: x.creditor_phone || "",
+                  Aina: x.creditor_type,
+                  Deni: number(x.original_amount),
+                  Tuliyolipa: number(x.paid_amount),
+                  Salio: number(x.balance),
+                  Status: x.status,
+                  Tarehe: x.due_date || "",
+                  Maelezo: x.note || "",
+                })),
+                "madeni-yetu.xlsx",
+                "Madeni Yetu"
+              )
+            }
+          >
+            Export Excel
+          </button>
+        </div>
+
+        <div className="toolbar">
+          <input
+            className="customer-search"
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+            placeholder="Tafuta jina, simu au aina..."
+          />
+        </div>
+
+        {loading ? (
+          <div className="empty-state">Inapakia...</div>
+        ) : (
+          <div className="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>Mtu/Supplier</th>
+                  <th>Aina</th>
+                  <th>Deni</th>
+                  <th>Tuliyolipa</th>
+                  <th>Salio</th>
+                  <th>Due Date</th>
+                  <th>Status</th>
+                  <th>Action</th>
+                </tr>
+              </thead>
+              <tbody>
+                {filtered.map((row) => (
+                  <tr key={row.id}>
+                    <td>
+                      <strong>{row.creditor_name}</strong>
+                      {row.creditor_phone && <small>{row.creditor_phone}</small>}
+                    </td>
+                    <td>{row.creditor_type}</td>
+                    <td>{money(row.original_amount)}</td>
+                    <td>{money(row.paid_amount)}</td>
+                    <td><strong>{money(row.balance)}</strong></td>
+                    <td>{row.due_date || "-"}</td>
+                    <td>
+                      <span className={`status-chip ${row.status === "PAID" ? "success" : row.status === "PARTIAL" ? "warning" : "danger"}`}>
+                        {row.status}
+                      </span>
+                    </td>
+                    <td>
+                      {number(row.balance) > 0 ? (
+                        <button
+                          className="primary-btn small-btn"
+                          onClick={() => {
+                            setPaying(row);
+                            setPaymentAmount("");
+                          }}
+                        >
+                          Lipa
+                        </button>
+                      ) : (
+                        <span className="status-chip success">Imelipwa</span>
+                      )}
+                    </td>
+                  </tr>
+                ))}
+
+                {!filtered.length && (
+                  <tr>
+                    <td colSpan="8">
+                      <div className="empty-state">
+                        <strong>Hakuna madeni yaliyopatikana</strong>
+                        <p>Ongeza mtu au supplier anayetudai hapo juu.</p>
+                      </div>
+                    </td>
+                  </tr>
+                )}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </div>
+
+      {paying && (
+        <div className="modal-backdrop">
+          <div className="modal-card" style={{ maxWidth: 430, margin: "8vh auto", background: "#fff", padding: 24 }}>
+            <div className="panel-header">
+              <div>
+                <h3>Lipa Deni</h3>
+                <span>{paying.creditor_name}</span>
+              </div>
+              <button className="icon-btn" onClick={() => setPaying(null)}>×</button>
+            </div>
+
+            <div className="mini-row">
+              <span>Salio la sasa</span>
+              <strong>{money(paying.balance)}</strong>
+            </div>
+
+            <div className="field" style={{ marginTop: 16 }}>
+              <label>Kiasi cha kulipa</label>
+              <input
+                autoFocus
+                type="number"
+                min="0"
+                max={number(paying.balance)}
+                value={paymentAmount}
+                onChange={(e) => setPaymentAmount(e.target.value)}
+                placeholder="0"
+              />
+            </div>
+
+            <div className="form-actions" style={{ marginTop: 18 }}>
+              <button className="secondary-btn" onClick={() => setPaying(null)}>
+                Cancel
+              </button>
+              <button className="primary-btn" disabled={busy} onClick={() => payPayable(paying)}>
+                {busy ? "Inalipa..." : "Thibitisha Malipo"}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      <div className="panel">
+        <div className="panel-header">
+          <div>
+            <h3>Historia ya Malipo</h3>
+            <span>Malipo yaliyofanyika kwenye madeni yetu.</span>
+          </div>
+        </div>
+
+        <div className="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>Tarehe</th>
+                <th>Deni</th>
+                <th>Kiasi</th>
+                <th>Method</th>
+                <th>Reference</th>
+                <th>Maelezo</th>
+              </tr>
+            </thead>
+            <tbody>
+              {payments.map((p) => {
+                const debt = rows.find((r) => r.id === p.payable_id);
+                return (
+                  <tr key={p.id}>
+                    <td>{p.payment_date || formatDate(p.created_at)}</td>
+                    <td>{debt?.creditor_name || "-"}</td>
+                    <td><strong>{money(p.amount)}</strong></td>
+                    <td>{p.method || "CASH"}</td>
+                    <td>{p.reference_no || "-"}</td>
+                    <td>{p.note || "-"}</td>
+                  </tr>
+                );
+              })}
+              {!payments.length && (
+                <tr>
+                  <td colSpan="6">
+                    <div className="empty-state">
+                      <strong>Hakuna malipo bado</strong>
+                      <p>Historia ya malipo itaonekana hapa.</p>
+                    </div>
+                  </td>
+                </tr>
+              )}
+            </tbody>
+          </table>
+        </div>
+      </div>
     </div>
   );
 }
@@ -6096,6 +7532,48 @@ button {
   display: flex;
   gap: 12px;
   align-items: center;
+}
+
+.language-control {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 38px;
+  padding: 3px 9px;
+  border: 1px solid #dce3ed;
+  border-radius: 10px;
+  background: #fff;
+}
+
+.language-icon { font-size: 16px; }
+.language-label {
+  font-size: 12px;
+  font-weight: 700;
+  color: #26364d;
+}
+.language-select {
+  margin: 0 !important;
+  border: 0;
+  outline: 0;
+  background: transparent;
+  color: #26364d;
+  font-size: 12px;
+  min-width: 115px;
+  cursor: pointer;
+}
+.google-translate-hidden {
+  position: absolute !important;
+  width: 1px !important;
+  height: 1px !important;
+  overflow: hidden !important;
+  opacity: 0 !important;
+  pointer-events: none !important;
+}
+.google-translate-hidden .goog-te-gadget,
+.google-translate-hidden .goog-te-combo,
+.google-translate-hidden .goog-logo-link,
+.google-translate-hidden .goog-te-gadget span {
+  display: none !important;
 }
 
 .refresh-btn {
@@ -7721,6 +9199,52 @@ input::placeholder{color:#a0aabc}
 @media (max-width:1100px){.theme-grid{grid-template-columns:repeat(3,minmax(0,1fr))}.settings-help-grid{grid-template-columns:repeat(2,minmax(0,1fr))}}
 @media (max-width:700px){.theme-grid{grid-template-columns:repeat(2,minmax(0,1fr))}.preference-row{align-items:flex-start;flex-direction:column}.segmented-control{width:100%}.segmented-control button{flex:1}.settings-help-grid{grid-template-columns:1fr}}
 @media (max-width:480px){.theme-grid{grid-template-columns:1fr}}
+
+
+.customer-search{width:100%;max-width:520px;margin:0 0 16px;padding:12px 14px;border:1px solid var(--border);border-radius:10px;background:#fff;color:#1f2937}
+.customer-detail-panel{margin-top:18px}
+.analytics-filter .form-grid{align-items:end}
+.analytics-bars{display:grid;gap:14px;padding-top:8px}
+.analytics-bar-row{display:grid;grid-template-columns:52px 1fr 120px;gap:10px;align-items:center;font-size:12px}
+.analytics-bar-track{height:12px;background:#edf2f7;border-radius:999px;overflow:hidden}
+.analytics-bar-fill{height:100%;border-radius:999px;background:var(--accent);min-width:2px}
+.cash-closing-summary{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:16px;margin-top:18px}
+.cash-closing-summary>div{padding:18px;border:1px solid var(--border);border-radius:14px;background:#fff}
+.cash-closing-summary span{display:block;color:var(--muted);font-size:12px;margin-bottom:7px}
+.cash-closing-summary strong{font-size:22px;color:#1f2937}
+.optional-module-card{display:flex;gap:18px;align-items:flex-start;margin-top:20px;padding:20px;border:1px solid var(--border);border-radius:16px;background:#fafbfd}
+.optional-module-card h3{margin:0 0 7px}
+.optional-module-card p{margin:0 0 14px;color:var(--muted);line-height:1.6}
+.optional-module-icon{width:54px;height:54px;border-radius:14px;display:grid;place-items:center;background:#eef4ff;font-size:25px;flex:0 0 auto}
+.stock-ok{color:#067647}
+@media (max-width:800px){.analytics-bar-row{grid-template-columns:42px 1fr 90px}.cash-closing-summary{grid-template-columns:1fr}.optional-module-card{flex-direction:column}}
+
+.payables-creditor-phone{display:block;color:var(--muted);font-size:11px;margin-top:3px}
+
+
+.bill-items-header{display:flex;align-items:center;justify-content:space-between;gap:12px;margin:22px 0 10px}
+.bill-items-table{border:1px solid var(--border);border-radius:14px;overflow:auto;background:#fff}
+.bill-item-row{display:grid;grid-template-columns:34px 120px minmax(220px,1fr) 85px 120px 125px 42px;gap:8px;align-items:center;padding:10px;border-bottom:1px solid #edf0f5;min-width:760px}
+.bill-item-row:last-child{border-bottom:0}
+.bill-item-row select,.bill-item-row input{width:100%;padding:9px 8px;border:1px solid var(--border);border-radius:8px;background:#fff;min-width:0}
+.bill-item-head{background:#f7f9fc;color:#667085;font-size:11px;font-weight:800;text-transform:uppercase}
+.bill-line-no{font-weight:800;color:var(--muted);text-align:center}
+.bill-line-total{font-size:13px;text-align:right}
+.danger-icon{color:#b42318!important;background:#fff5f5!important}
+.bill-summary-box{display:flex;justify-content:flex-end;gap:12px;margin-top:14px}
+.bill-summary-box>div{min-width:150px;padding:13px 15px;border:1px solid var(--border);border-radius:12px;background:#fafbfd}
+.bill-summary-box span,.bill-preview-summary span{display:block;color:var(--muted);font-size:11px;margin-bottom:5px}
+.bill-summary-box strong{font-size:17px}
+.bill-summary-box .bill-balance{background:#fff7ed;border-color:#fed7aa}
+.bill-summary-box .bill-balance strong{color:#c2410c;font-size:20px}
+.bill-multiple-badge{display:inline-block;margin-left:6px;padding:3px 6px;border-radius:999px;background:#eef4ff;color:#1262dc;font-size:9px;font-weight:800}
+.bill-created-modal{max-width:620px}
+.bill-preview-summary{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px;margin-top:14px}
+.bill-preview-summary>div{border:1px solid var(--border);border-radius:12px;padding:13px;background:#fafbfd}
+.bill-preview-summary strong{font-size:16px}
+@media(max-width:900px){.bill-summary-box{justify-content:stretch;flex-wrap:wrap}.bill-summary-box>div{flex:1;min-width:130px}}
+@media(max-width:600px){.bill-preview-summary{grid-template-columns:1fr}.bill-items-header{align-items:flex-start;flex-direction:column}}
+
 
 `;
 
