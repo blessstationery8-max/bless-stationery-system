@@ -2025,6 +2025,11 @@ function Dashboard({ businessId, business, go, refresh }) {
     services: 0,
     lowStock: 0,
     stockValue: 0,
+    drawerCash: 0,
+    openingCash: 0,
+    cashAdded: 0,
+    todayCashExpenses: 0,
+    todayCashDeposits: 0,
   });
   const [lowProducts, setLowProducts] = useState([]);
   const [allLowProducts, setAllLowProducts] = useState([]);
@@ -2041,6 +2046,7 @@ function Dashboard({ businessId, business, go, refresh }) {
       setStats({
         todaySales: 0, todayProfit: 0, monthSales: 0, monthProfit: 0,
         products: 0, services: 0, lowStock: 0, stockValue: 0,
+        drawerCash: 0, openingCash: 0, cashAdded: 0, todayCashExpenses: 0, todayCashDeposits: 0,
       });
       setLowProducts([]);
       setAllLowProducts([]);
@@ -2055,12 +2061,18 @@ function Dashboard({ businessId, business, go, refresh }) {
         supabase.from("services").select("*").eq("business_id", businessId).eq("active", true),
         supabase.from("sales").select("*").eq("business_id", businessId).order("sale_date", { ascending: false }).limit(1000),
         supabase.from("stock_in").select("*").eq("business_id", businessId),
+        supabase.from("daily_cash_openings").select("opening_cash").eq("business_id", businessId).eq("opening_date", todayDateInput()).maybeSingle(),
+        supabase.from("daily_cash_additions").select("amount").eq("business_id", businessId).eq("addition_date", todayDateInput()),
+        supabase.from("expenses").select("amount").eq("business_id", businessId).gte("expense_date", `${todayDateInput()}T00:00:00`).lte("expense_date", `${todayDateInput()}T23:59:59.999`),
+        supabase.from("deposits").select("amount").eq("business_id", businessId).gte("deposit_date", `${todayDateInput()}T00:00:00`).lte("deposit_date", `${todayDateInput()}T23:59:59.999`),
       ]);
 
-      const [productsResult, servicesResult, salesResult, stockInResult] = results;
+      const [productsResult, servicesResult, salesResult, stockInResult, openingCashResult, cashAdditionsResult, expensesTodayResult, depositsTodayResult] = results;
       for (const [label, result] of [
         ["products", productsResult], ["services", servicesResult],
         ["sales", salesResult], ["stock_in", stockInResult],
+        ["daily_cash_openings", openingCashResult], ["daily_cash_additions", cashAdditionsResult],
+        ["expenses today", expensesTodayResult], ["deposits today", depositsTodayResult],
       ]) {
         if (result?.error) console.error(`Dashboard ${label} query failed:`, result.error);
       }
@@ -2091,6 +2103,11 @@ function Dashboard({ businessId, business, go, refresh }) {
       startMonth.setHours(0, 0, 0, 0);
       const todaySales = s.filter((x) => x.sale_date && new Date(x.sale_date) >= startToday);
       const monthSales = s.filter((x) => x.sale_date && new Date(x.sale_date) >= startMonth);
+      const todayCashSales = todaySales.filter((x) => x.payment_method === "CASH").reduce((a, x) => a + number(x.sales_total), 0);
+      const openingCashValue = number(openingCashResult?.data?.opening_cash);
+      const cashAddedValue = (cashAdditionsResult?.data || []).reduce((a, x) => a + number(x.amount), 0);
+      const cashExpensesValue = (expensesTodayResult?.data || []).reduce((a, x) => a + number(x.amount), 0);
+      const cashDepositsValue = (depositsTodayResult?.data || []).reduce((a, x) => a + number(x.amount), 0);
 
       setStats({
         todaySales: todaySales.reduce((a, x) => a + number(x.sales_total), 0),
@@ -2101,6 +2118,11 @@ function Dashboard({ businessId, business, go, refresh }) {
         services: serviceRows.length,
         lowStock: low.length,
         stockValue: p.reduce((a, x) => a + Math.max(stockMap[x.id] || 0, 0) * number(x.cost_per_each), 0),
+        openingCash: openingCashValue,
+        cashAdded: cashAddedValue,
+        todayCashExpenses: cashExpensesValue,
+        todayCashDeposits: cashDepositsValue,
+        drawerCash: openingCashValue + todayCashSales + cashAddedValue - cashExpensesValue - cashDepositsValue,
       });
       setAllLowProducts(low);
       setLowProducts(low.slice(0, 8));
@@ -2269,6 +2291,14 @@ function Dashboard({ businessId, business, go, refresh }) {
           icon="💎"
           tone="orange"
         />
+      </div>
+
+      <div className="stats-grid drawer-cash-dashboard">
+        <StatCard title="Fedha Iliyopo kwenye Droo" value={money(stats.drawerCash)} icon="💵" tone={stats.drawerCash >= 0 ? "green" : "red"} />
+        <StatCard title="Fedha ya Mwanzo" value={money(stats.openingCash)} icon="🌅" tone="purple" />
+        <StatCard title="Fedha Iliyoongezwa (Chenji)" value={money(stats.cashAdded)} icon="➕" tone="blue" />
+        <StatCard title="Matumizi ya Leo" value={money(stats.todayCashExpenses)} icon="💸" tone="red" />
+        <StatCard title="Deposit za Leo" value={money(stats.todayCashDeposits)} icon="🏦" tone="purple" />
       </div>
 
       <div className="stats-grid small-stats">
@@ -3255,6 +3285,15 @@ function SalesPage({ businessId, staff, business, onChanged }) {
   const [receipt, setReceipt] = useState(null);
   const [availableCustomerCredit, setAvailableCustomerCredit] = useState(0);
   const [customerCreditRows, setCustomerCreditRows] = useState([]);
+  const [openingCash, setOpeningCash] = useState(null);
+  const [openingCashAmount, setOpeningCashAmount] = useState("");
+  const [openingCashNotes, setOpeningCashNotes] = useState("");
+  const [openingCashBusy, setOpeningCashBusy] = useState(false);
+  const [openingCashLoading, setOpeningCashLoading] = useState(true);
+  const [drawerAdditions, setDrawerAdditions] = useState([]);
+  const [drawerAdditionAmount, setDrawerAdditionAmount] = useState("");
+  const [drawerAdditionNote, setDrawerAdditionNote] = useState("Chenji");
+  const [drawerAdditionBusy, setDrawerAdditionBusy] = useState(false);
 
   const [type, setType] = useState("PRODUCT");
   const [productMode, setProductMode] = useState("existing");
@@ -3284,11 +3323,15 @@ function SalesPage({ businessId, staff, business, onChanged }) {
   async function load() {
     if (!businessId) return;
 
+    setOpeningCashLoading(true);
+    const openingDate = todayDateInput();
     const [
       { data: p },
       { data: sv },
       { data: s },
       { data: si },
+      openingRes,
+      additionsRes,
     ] = await Promise.all([
       supabase.from("products").select("*").eq("business_id", businessId).eq("active", true).order("product_name"),
       supabase.from("services").select("*").eq("business_id", businessId).eq("active", true).order("service_name"),
@@ -3299,8 +3342,20 @@ function SalesPage({ businessId, staff, business, onChanged }) {
         .order("sale_date", { ascending: false })
         .limit(100),
       supabase.from("stock_in").select("*").eq("business_id", businessId),
+      supabase.from("daily_cash_openings").select("*").eq("business_id", businessId).eq("opening_date", openingDate).maybeSingle(),
+      supabase.from("daily_cash_additions").select("*").eq("business_id", businessId).eq("addition_date", openingDate).order("created_at", { ascending: false }),
     ]);
 
+    if (openingRes.error) {
+      console.error("Daily opening cash load error:", openingRes.error);
+      setOpeningCash(null);
+    } else {
+      setOpeningCash(openingRes.data || null);
+      if (openingRes.data) setOpeningCashAmount(String(openingRes.data.opening_cash ?? ""));
+    }
+    if (additionsRes.error) console.error("Drawer cash additions load error:", additionsRes.error);
+    setDrawerAdditions(additionsRes.data || []);
+    setOpeningCashLoading(false);
     setProducts(p || []);
     setServices(sv || []);
     setSales(s || []);
@@ -3360,8 +3415,80 @@ function SalesPage({ businessId, staff, business, onChanged }) {
     });
   }
 
+  async function saveOpeningCash(e) {
+    e.preventDefault();
+    if (!businessId) return;
+    if (openingCash) {
+      alert("Fedha ya mwanzo ya leo tayari imehifadhiwa.");
+      return;
+    }
+    if (openingCashAmount.trim() === "" || !Number.isFinite(Number(openingCashAmount)) || Number(openingCashAmount) < 0) {
+      alert("Ingiza kiasi sahihi cha fedha kilichopo kwenye droo. Unaweza kuweka 0 ikiwa droo haina fedha.");
+      return;
+    }
+    setOpeningCashBusy(true);
+    const { data, error } = await supabase.from("daily_cash_openings").insert({
+      business_id: businessId,
+      opening_date: todayDateInput(),
+      opening_cash: number(openingCashAmount),
+      notes: openingCashNotes.trim() || null,
+      staff_id: staff?.id || null,
+      created_by: staff?.user_id || null,
+    }).select("*").single();
+    setOpeningCashBusy(false);
+    if (error) {
+      const { data: existing } = await supabase.from("daily_cash_openings").select("*").eq("business_id", businessId).eq("opening_date", todayDateInput()).maybeSingle();
+      if (existing) {
+        setOpeningCash(existing);
+        setOpeningCashAmount(String(existing.opening_cash ?? ""));
+        alert("Fedha ya mwanzo ya leo tayari imeingizwa na mfanyakazi mwingine.");
+      } else {
+        alert(`Imeshindikana kuhifadhi fedha ya mwanzo: ${error.message}. Hakikisha umeendesha SQL ya Daily Cash Opening kwanza.`);
+      }
+      return;
+    }
+    setOpeningCash(data);
+    alert("Fedha ya mwanzo imehifadhiwa. Sasa unaweza kuanza kurekodi mauzo.");
+  }
+
+  async function saveDrawerAddition(e) {
+    e.preventDefault();
+    if (!businessId || !openingCash || openingCash.opening_date !== todayDateInput()) {
+      alert("Kwanza hifadhi fedha ya kuanza siku kabla ya kuongeza fedha kwenye droo.");
+      return;
+    }
+    const amount = Number(drawerAdditionAmount);
+    if (!Number.isFinite(amount) || amount <= 0) {
+      alert("Ingiza kiasi cha fedha kilicho zaidi ya sifuri.");
+      return;
+    }
+    setDrawerAdditionBusy(true);
+    const { data, error } = await supabase.from("daily_cash_additions").insert({
+      business_id: businessId,
+      addition_date: todayDateInput(),
+      amount,
+      note: drawerAdditionNote.trim() || "Fedha iliyoongezwa kwenye droo",
+      staff_id: staff?.id || null,
+      created_by: staff?.user_id || null,
+    }).select("*").single();
+    setDrawerAdditionBusy(false);
+    if (error) {
+      alert(`Imeshindikana kuhifadhi fedha iliyoongezwa: ${error.message}. Hakikisha umeendesha SQL ya Daily Cash Additions.`);
+      return;
+    }
+    setDrawerAdditions((rows) => [data, ...rows]);
+    setDrawerAdditionAmount("");
+    if (onChanged) onChanged();
+    alert("Fedha iliyoongezwa kwenye droo imehifadhiwa. Haijahesabiwa kama mauzo.");
+  }
+
   async function makeSale(e) {
     e.preventDefault();
+
+    if (!openingCash || openingCash.opening_date !== todayDateInput()) {
+      alert("Huwezi kurekodi mauzo bado. Kwanza ingiza na hifadhi fedha iliyopo kwenye droo ya leo.");
+      return;
+    }
 
     const qty = number(form.quantity);
     const cost = number(form.unit_cost);
@@ -3686,7 +3813,46 @@ function SalesPage({ businessId, staff, business, onChanged }) {
         subtitle="Fanya mauzo na toa receipt papo hapo."
       />
 
-      <div className="sale-type-tabs">
+      <div className="panel opening-cash-panel" style={{ marginBottom: 14, border: openingCash ? "1px solid #22a06b" : "2px solid #d97706" }}>
+        <div className="panel-header">
+          <div>
+            <h3>💵 Fedha ya Kuanza Siku (Opening Cash)</h3>
+            <span>Hesabu fedha yote iliyopo kwenye droo kabla ya kuanza mauzo ya leo ({todayDateInput()}).</span>
+          </div>
+          <strong>{openingCash ? "IMEHIFADHIWA" : "INAHITAJIKA"}</strong>
+        </div>
+        {openingCashLoading ? (
+          <p>Inakagua fedha ya mwanzo ya leo...</p>
+        ) : openingCash ? (
+          <div className="stats-grid opening-cash-saved-grid">
+            <div className="stat-card"><span>Fedha ya mwanzo</span><strong>{money(openingCash.opening_cash)}</strong></div>
+            <div className="stat-card"><span>Tarehe</span><strong>{openingCash.opening_date}</strong></div>
+            <div className="stat-card"><span>Maelezo</span><strong>{openingCash.notes || "—"}</strong></div>
+          </div>
+        ) : (
+          <form onSubmit={saveOpeningCash} className="form-grid">
+            <Field label="Fedha iliyopo kwenye droo (TZS)" type="number" value={openingCashAmount} onChange={setOpeningCashAmount} placeholder="Mfano: 50000" required />
+            <Field label="Maelezo (hiari)" value={openingCashNotes} onChange={setOpeningCashNotes} placeholder="Mfano: salio lililoachwa jana" />
+            <div className="form-actions"><button className="primary-btn" disabled={openingCashBusy || openingCashLoading}>{openingCashBusy ? "Inahifadhi..." : "Hifadhi na Anza Kazi"}</button></div>
+            <p style={{ gridColumn: "1 / -1", margin: 0, color: "#b45309" }}>Mauzo yamefungwa mpaka fedha ya mwanzo ihifadhiwe.</p>
+          </form>
+        )}
+      </div>
+
+      <div className="panel drawer-addition-panel" style={{ marginBottom: 18, opacity: openingCash ? 1 : 0.6 }}>
+        <div className="panel-header">
+          <div><h3>➕ Ongeza Fedha kwenye Droo (Chenji)</h3><span>Fedha hii inaongezwa kwenye salio la droo, si mauzo.</span></div>
+          <strong>{money(drawerAdditions.reduce((sum, row) => sum + number(row.amount), 0))}</strong>
+        </div>
+        <form onSubmit={saveDrawerAddition} className="form-grid drawer-addition-form">
+          <Field label="Kiasi kilichoongezwa (TZS)" type="number" value={drawerAdditionAmount} onChange={setDrawerAdditionAmount} placeholder="Mfano: 20000" required />
+          <Field label="Sababu / Maelezo" value={drawerAdditionNote} onChange={setDrawerAdditionNote} placeholder="Mfano: kuongeza chenji" />
+          <div className="form-actions"><button className="primary-btn" disabled={!openingCash || drawerAdditionBusy}>{drawerAdditionBusy ? "Inahifadhi..." : "Hifadhi Fedha ya Droo"}</button></div>
+        </form>
+        {drawerAdditions.length > 0 && <div className="table-wrap drawer-addition-table"><table><thead><tr><th>Muda</th><th>Maelezo</th><th>Kiasi</th></tr></thead><tbody>{drawerAdditions.map((row) => <tr key={row.id}><td>{row.created_at ? new Date(row.created_at).toLocaleTimeString("sw-TZ", { hour: "2-digit", minute: "2-digit" }) : "—"}</td><td>{row.note || "Fedha ya droo"}</td><td><strong>{money(row.amount)}</strong></td></tr>)}</tbody></table></div>}
+      </div>
+
+      <div className="sale-type-tabs" style={{ opacity: openingCash ? 1 : 0.55, pointerEvents: openingCash ? "auto" : "none" }}>
         <button
           className={type === "PRODUCT" ? "active" : ""}
           onClick={() => setType("PRODUCT")}
@@ -6377,7 +6543,7 @@ function AnalyticsPage({ businessId, refresh }) {
 function CashClosingPage({ businessId, refresh }) {
   const [date, setDate] = useState(todayDateInput());
   const [actualCash, setActualCash] = useState("");
-  const [records, setRecords] = useState({ sales: [], expenses: [], deposits: [], credits: [] });
+  const [records, setRecords] = useState({ sales: [], expenses: [], deposits: [], credits: [], opening: null, additions: [] });
   const [loading, setLoading] = useState(true);
 
   useEffect(() => { load(); }, [businessId, refresh, date]);
@@ -6393,16 +6559,19 @@ function CashClosingPage({ businessId, refresh }) {
     setLoading(true);
     const start = `${date}T00:00:00`;
     const end = `${date}T23:59:59.999`;
-    const [salesRes, expenseRes, depositRes, creditRes] = await Promise.all([
+    const [salesRes, expenseRes, depositRes, creditRes, openingRes, additionsRes] = await Promise.all([
       supabase.from("sales").select("*").eq("business_id", businessId).gte("sale_date", start).lte("sale_date", end),
       supabase.from("expenses").select("*").eq("business_id", businessId).gte("expense_date", start).lte("expense_date", end),
       supabase.from("deposits").select("*").eq("business_id", businessId).gte("deposit_date", start).lte("deposit_date", end),
       supabase.from("credit_transactions").select("*").eq("business_id", businessId),
+      supabase.from("daily_cash_openings").select("*").eq("business_id", businessId).eq("opening_date", date).maybeSingle(),
+      supabase.from("daily_cash_additions").select("*").eq("business_id", businessId).eq("addition_date", date),
     ]);
     if (salesRes.error) alert(salesRes.error.message);
     if (expenseRes.error) alert(expenseRes.error.message);
     if (depositRes.error) alert(depositRes.error.message);
-    setRecords({ sales: salesRes.data || [], expenses: expenseRes.data || [], deposits: depositRes.data || [], credits: creditRes.data || [] });
+    if (additionsRes.error) console.error("Cash closing additions load error:", additionsRes.error);
+    setRecords({ sales: salesRes.data || [], expenses: expenseRes.data || [], deposits: depositRes.data || [], credits: creditRes.data || [], opening: openingRes.data || null, additions: additionsRes.data || [] });
     setLoading(false);
   }
 
@@ -6411,7 +6580,9 @@ function CashClosingPage({ businessId, refresh }) {
   const cashExpenses = records.expenses.reduce((a,x)=>a+number(x.amount),0);
   // Deposit records represent money removed from the drawer and transferred to the bank.
   const cashDeposits = records.deposits.reduce((a,x)=>a+number(x.amount),0);
-  const cashBeforeDeposit = cashSales - cashExpenses;
+  const openingCashAmount = number(records.opening?.opening_cash);
+  const cashAddedAmount = records.additions.reduce((a, x) => a + number(x.amount), 0);
+  const cashBeforeDeposit = openingCashAmount + cashSales + cashAddedAmount - cashExpenses;
   const knownMovement = cashBeforeDeposit - cashDeposits;
   const difference = actualCash === "" ? null : number(actualCash) - knownMovement;
   const debtPaymentsAll = records.credits.filter((x) => String(x.last_payment_at || "").slice(0,10) === date).reduce((a,x)=>a+number(x.paid_amount),0);
@@ -6424,7 +6595,36 @@ function CashClosingPage({ businessId, refresh }) {
   function printClosing() {
     const win = window.open("", "_blank", "width=900,height=800");
     if (!win) { alert("Ruhusu pop-ups kisha ujaribu tena."); return; }
-    win.document.write(`<!doctype html><html><head><meta charset="utf-8"><title>Daily Cash Closing</title><style>body{font-family:Arial;padding:28px;color:#111}h1{margin:0}.muted{color:#666}.grid{display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-top:20px}.card{border:1px solid #ddd;padding:12px}.card strong{display:block;font-size:18px;margin-top:5px}.total{font-size:22px;font-weight:800;margin-top:20px;padding:14px;border:2px solid #222}@media print{body{padding:0}}</style></head><body><h1>Bless Stationery</h1><div class="muted">Daily Cash Closing — ${escapeHtml(date)}</div><div class="grid"><div class="card">Cash Sales<strong>${escapeHtml(money(cashSales))}</strong></div><div class="card">Cash Before Deposit<strong>${escapeHtml(money(cashBeforeDeposit))}</strong></div><div class="card">Expenses<strong>${escapeHtml(money(cashExpenses))}</strong></div><div class="card">Cash Deposits to Bank<strong>${escapeHtml(money(cashDeposits))}</strong></div></div><div class="total">Known Cash Movement: ${escapeHtml(money(knownMovement))}<br>Actual Cash Count: ${escapeHtml(money(actualCash))}<br>Difference: ${escapeHtml(difference === null ? "-" : money(difference))}</div><p>Note: Mfumo unahesabu cash movement kutokana na records zilizopo. Debt payments za zamani zinahitaji payment history table ili ziweze kuhesabiwa kwa usahihi wa siku.</p><script>window.onload=()=>window.print()</script></body></html>`);
+    win.document.open();
+    win.document.write(`<!doctype html><html><head><meta charset="utf-8"><title>Daily Cash Closing</title><style>
+      @page { size: A4 portrait; margin: 8mm; }
+      * { box-sizing: border-box; }
+      html, body { margin: 0; padding: 0; width: 100%; color: #111; font-family: Arial, Helvetica, sans-serif; font-size: 9pt; line-height: 1.15; }
+      body { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+      .sheet { width: 100%; margin: 0 auto; page-break-inside: avoid; break-inside: avoid; }
+      header { border-bottom: 1.5px solid #222; padding: 0 0 5px; margin: 0 0 8px; }
+      h1 { font-size: 16pt; line-height: 1.1; margin: 0 0 3px; font-weight: 700; }
+      .subtitle { font-size: 9pt; color: #333; }
+      .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; margin: 8px 0; }
+      .card { border: 1px solid #aaa; padding: 7px 9px; min-height: 42px; break-inside: avoid; }
+      .label { font-size: 8pt; color: #333; }
+      .card strong { display: block; font-size: 11pt; margin-top: 3px; font-weight: 700; }
+      .total { border: 1px solid #222; padding: 6px 9px; margin-top: 7px; break-inside: avoid; }
+      .total-row { display: flex; justify-content: space-between; align-items: baseline; gap: 10px; padding: 4px 0; border-bottom: 1px solid #ddd; font-size: 9pt; }
+      .total-row:last-child { border-bottom: 0; }
+      .total-row strong { font-size: 10pt; white-space: nowrap; }
+      .difference { font-size: 11pt !important; }
+      .signatures { display: grid; grid-template-columns: 1fr 1fr; gap: 22px; margin-top: 22px; font-size: 8pt; break-inside: avoid; }
+      .sign-line { border-top: 1px solid #555; padding-top: 4px; }
+      @media print {
+        html, body { width: auto !important; height: auto !important; }
+        .sheet { width: 100% !important; max-width: none !important; }
+        header, .grid, .total, .signatures { page-break-inside: avoid !important; break-inside: avoid !important; }
+      }
+    </style></head><body><main class="sheet"><header><h1>Bless Stationery</h1><div class="subtitle">Daily Cash Closing | Tarehe: ${escapeHtml(date)}</div></header>
+      <section class="grid"><div class="card"><div class="label">Opening Cash</div><strong>${escapeHtml(money(openingCashAmount))}</strong></div><div class="card"><div class="label">Cash Sales</div><strong>${escapeHtml(money(cashSales))}</strong></div><div class="card"><div class="label">Cash Added (Change)</div><strong>${escapeHtml(money(cashAddedAmount))}</strong></div><div class="card"><div class="label">Cash Before Deposit</div><strong>${escapeHtml(money(cashBeforeDeposit))}</strong></div><div class="card"><div class="label">Expenses</div><strong>${escapeHtml(money(cashExpenses))}</strong></div><div class="card"><div class="label">Cash Deposited to Bank</div><strong>${escapeHtml(money(cashDeposits))}</strong></div></section>
+      <section class="total"><div class="total-row"><span>Expected Cash in Drawer</span><strong>${escapeHtml(money(knownMovement))}</strong></div><div class="total-row"><span>Actual Cash Counted</span><strong>${escapeHtml(money(actualCash))}</strong></div><div class="total-row"><span>Difference</span><strong class="difference">${escapeHtml(difference === null ? "-" : money(difference))}</strong></div></section>
+      <section class="signatures"><div class="sign-line">Prepared by / Saini</div><div class="sign-line">Checked by / Saini</div></section></main><script>window.onload=()=>{window.focus();window.print();}</script></body></html>`);
     win.document.close();
   }
 
@@ -6434,13 +6634,15 @@ function CashClosingPage({ businessId, refresh }) {
       <PageTitle title="Daily Cash Closing" subtitle="Funga siku, linganisha cash iliyotarajiwa na cash uliyo-count." />
       <div className="panel"><div className="form-grid"><Field label="Closing Date" type="date" value={date} onChange={setDate} /><Field label="Actual Cash Count" type="number" value={actualCash} onChange={saveCount} placeholder="Ingiza cash uliyo-count" /><div className="form-actions"><button className="secondary-btn" onClick={load}>↻ Refresh</button><button className="primary-btn" onClick={printClosing}>🖨 Print Closing</button></div></div></div>
       <div className="stats-grid">
+        <StatCard title="Opening Cash" value={money(openingCashAmount)} icon="🌅" tone="purple" />
         <StatCard title="Cash Sales" value={money(cashSales)} icon="💵" tone="blue" />
+        <StatCard title="Fedha Iliyoongezwa" value={money(cashAddedAmount)} icon="➕" tone="blue" />
         <StatCard title="Cash Before Deposit" value={money(cashBeforeDeposit)} icon="🧮" tone={cashBeforeDeposit >= 0 ? "green" : "red"} />
         <StatCard title="Expenses" value={money(cashExpenses)} icon="💸" tone="red" />
         <StatCard title="Deposits to Bank" value={money(cashDeposits)} icon="🏦" tone="purple" />
       </div>
       <div className="notice" style={{ marginBottom: 16 }}>
-        Hesabu ya cash kwa sasa ni mauzo ya CASH ukitoa matumizi na deposit zilizowekwa benki. Haijumuishi salio la kuanzia siku au marejesho ya madeni, kwa sababu mfumo haujahifadhi historia ya malipo hayo kwa uhakika.
+Hesabu ya cash inaongeza fedha ya mwanzo, mauzo ya CASH na fedha zilizoongezwa kwa ajili ya chenji, kisha inatoa matumizi na deposit zilizowekwa benki. Marejesho ya madeni hayajaongezwa kwenye hesabu hii kwa sababu historia ya malipo yake inahitaji kufuatiliwa tofauti.
       </div>
       <div className="panel cash-closing-summary">
         <div><span>Known Cash Movement</span><strong>{money(knownMovement)}</strong></div>
@@ -9435,6 +9637,29 @@ input::placeholder{color:#a0aabc}
 @media(max-width:900px){.bill-summary-box{justify-content:stretch;flex-wrap:wrap}.bill-summary-box>div{flex:1;min-width:130px}}
 @media(max-width:600px){.bill-preview-summary{grid-template-columns:1fr}.bill-items-header{align-items:flex-start;flex-direction:column}}
 
+
+
+/* Compact Opening Cash and drawer-cash presentation */
+.opening-cash-panel, .drawer-addition-panel { padding: 14px 16px !important; }
+.opening-cash-panel .panel-header, .drawer-addition-panel .panel-header { margin-bottom: 10px; gap: 10px; }
+.opening-cash-panel .panel-header h3, .drawer-addition-panel .panel-header h3 { font-size: 16px !important; line-height: 1.35; margin: 0 0 3px; }
+.opening-cash-panel .panel-header span, .drawer-addition-panel .panel-header span { font-size: 12px !important; line-height: 1.45; color: #738198; }
+.opening-cash-saved-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px !important; }
+.opening-cash-saved-grid .stat-card { padding: 12px 14px !important; min-height: 0 !important; border-radius: 12px !important; }
+.opening-cash-saved-grid .stat-card span { display: block; font-size: 11px !important; line-height: 1.35; color: #738198; }
+.opening-cash-saved-grid .stat-card strong { display: block; font-size: 16px !important; line-height: 1.35; margin-top: 5px !important; overflow-wrap: anywhere; }
+.opening-cash-panel .field label, .drawer-addition-panel .field label { font-size: 12px !important; }
+.opening-cash-panel input, .drawer-addition-panel input { min-height: 38px; font-size: 13px !important; }
+.drawer-cash-dashboard { grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 12px !important; margin: 14px 0 18px; }
+.drawer-cash-dashboard .stat-card { min-width: 0; padding: 14px !important; }
+.drawer-cash-dashboard .stat-card strong { font-size: clamp(15px, 1.35vw, 20px) !important; line-height: 1.35; overflow-wrap: anywhere; }
+.drawer-cash-dashboard .stat-card span { font-size: 11px !important; line-height: 1.4; }
+.drawer-addition-form { grid-template-columns: repeat(3, minmax(0, 1fr)); align-items: end; gap: 12px !important; }
+.drawer-addition-table { margin-top: 12px; }
+.drawer-addition-table table { min-width: 500px !important; }
+.drawer-addition-table th, .drawer-addition-table td { padding: 8px 10px !important; font-size: 12px !important; }
+@media (max-width: 900px) { .opening-cash-saved-grid { grid-template-columns: 1fr 1fr; } .drawer-cash-dashboard { grid-template-columns: repeat(2, minmax(0, 1fr)); } .drawer-addition-form { grid-template-columns: 1fr; } }
+@media (max-width: 520px) { .opening-cash-saved-grid { grid-template-columns: 1fr; } .opening-cash-panel, .drawer-addition-panel { padding: 12px !important; } }
 
 `;
 
