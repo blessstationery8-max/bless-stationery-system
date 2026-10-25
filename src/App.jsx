@@ -63,6 +63,51 @@ function formatDate(value) {
   });
 }
 
+// STAFF deletion protection: a delete click creates an approval request; it never deletes directly.
+async function requestDeleteApproval({ businessId, staff, table, recordId, label }) {
+  const role = String(staff?.role || "").toUpperCase();
+  if (role === "ADMIN") return false; // ADMIN may continue through the existing confirmation flow.
+  if (!businessId || !staff?.id) {
+    alert("Usalama: taarifa za akaunti hazijakamilika. Hakuna kilichofutwa. Tafadhali refresh mfumo.");
+    return true;
+  }
+
+  const reason = window.prompt(
+    `OMBI LA KUFUTA: ${label}\n\nAndika sababu ya kutaka kufuta taarifa hii:`,
+    ""
+  );
+  if (reason === null) return true;
+  if (!reason.trim()) {
+    alert("Lazima uandike sababu. Hakuna kilichofutwa.");
+    return true;
+  }
+
+  const { data: authData, error: authError } = await supabase.auth.getUser();
+  if (authError || !authData?.user?.id) {
+    alert("Imeshindikana kuthibitisha akaunti yako. Hakuna kilichofutwa.");
+    return true;
+  }
+
+  const { error } = await supabase.from("admin_approval_requests").insert({
+    business_id: businessId,
+    requester_user_id: authData.user.id,
+    request_type: "DELETE",
+    target_table: table,
+    target_record_id: String(recordId),
+    target_label: String(label || table),
+    details: `Jedwali: ${table}; Rekodi ID: ${recordId}; Taarifa: ${label}`,
+    reason: reason.trim(),
+    status: "PENDING",
+  });
+
+  if (error) {
+    alert("Ombi halikutumwa, na hakuna kilichofutwa. Hakikisha SQL ya Approval Requests imeendeshwa: " + error.message);
+  } else {
+    alert("Ombi limetumwa kwa ADMIN. Taarifa haijafutwa; itafutwa tu baada ya kuidhinishwa.");
+  }
+  return true;
+}
+
 function exportToExcel(rows, fileName, sheetName = "Data") {
   if (!rows || !rows.length) {
     alert("Hakuna data ya ku-export kwa sasa.");
@@ -1063,6 +1108,9 @@ function System({ user }) {
 
   const pages = {
     dashboard: <Dashboard businessId={businessId} business={business} go={go} refresh={refresh} />,
+    adminMessages: <AdminMessagesPage businessId={businessId} staff={staff} user={user} />,
+    hotspot: <HotspotLedgerPage businessId={businessId} staff={staff} user={user} />,
+    approvals: <ApprovalRequestsPage businessId={businessId} staff={staff} user={user} />,
     customers: <CustomersPage businessId={businessId} refresh={refresh} />,
     analytics: <AnalyticsPage businessId={businessId} refresh={refresh} />,
     cashClosing: <CashClosingPage businessId={businessId} refresh={refresh} />,
@@ -1112,8 +1160,8 @@ function System({ user }) {
       />
     ),
     reports: <ReportsPage businessId={businessId} refresh={refresh} />,
-    staff: <StaffPage businessId={businessId} refresh={refresh} />,
-    credits: <CreditPage businessId={businessId} staff={staff} refresh={refresh} />,
+    staff: <StaffPage businessId={businessId} refresh={refresh} currentStaff={staff} />,
+    credits: <CreditPage businessId={businessId} staff={staff} refresh={refresh} onChanged={() => setRefresh((x) => x + 1)} />,
     customerCredits: <CustomerCreditsPage businessId={businessId} staff={staff} refresh={refresh} />,
     payables: <PayablesPage businessId={businessId} staff={staff} refresh={refresh} />,
     attendance: <AttendancePage businessId={businessId} staff={staff} refresh={refresh} />,
@@ -1212,6 +1260,11 @@ function System({ user }) {
             text="Dashboard"
             onClick={() => go("dashboard")}
           />
+
+          <div className="nav-title">USALAMA NA HUDUMA ZA ZIADA</div>
+          <NavButton active={page === "adminMessages"} icon="✉" text="Admin Messages" onClick={() => go("adminMessages")} />
+          <NavButton active={page === "approvals"} icon="✓" text="Approval Requests" onClick={() => go("approvals")} />
+          <NavButton active={page === "hotspot"} icon="📶" text="Wi-Fi Hotspot Cash" onClick={() => go("hotspot")} />
 
           <div className="nav-title">BIASHARA</div>
 
@@ -1486,6 +1539,7 @@ function System({ user }) {
           </div>
         </header>
 
+        <AdminMessageBanner businessId={businessId} user={user} staff={staff} />
         <section className="content">
           {isPlatformAdmin && page.startsWith("saas") ? (
             pages[page]
@@ -2018,6 +2072,7 @@ function SaaSAdminPage({ section = "overview", refresh }) {
 function Dashboard({ businessId, business, go, refresh }) {
   const [stats, setStats] = useState({
     todaySales: 0,
+    todayDebtCollections: 0,
     todayProfit: 0,
     monthSales: 0,
     monthProfit: 0,
@@ -2044,7 +2099,7 @@ function Dashboard({ businessId, business, go, refresh }) {
     if (!businessId) {
       setLoading(false);
       setStats({
-        todaySales: 0, todayProfit: 0, monthSales: 0, monthProfit: 0,
+        todaySales: 0, todayDebtCollections: 0, todayProfit: 0, monthSales: 0, monthProfit: 0,
         products: 0, services: 0, lowStock: 0, stockValue: 0,
         drawerCash: 0, openingCash: 0, cashAdded: 0, todayCashExpenses: 0, todayCashDeposits: 0,
       });
@@ -2056,6 +2111,16 @@ function Dashboard({ businessId, business, go, refresh }) {
 
     setLoading(true);
     try {
+      const startToday = new Date();
+      startToday.setHours(0, 0, 0, 0);
+      const tomorrow = new Date(startToday);
+      tomorrow.setDate(tomorrow.getDate() + 1);
+      const startMonth = new Date();
+      startMonth.setDate(1);
+      startMonth.setHours(0, 0, 0, 0);
+      const nextMonth = new Date(startMonth);
+      nextMonth.setMonth(nextMonth.getMonth() + 1);
+
       const results = await Promise.all([
         supabase.from("products").select("*").eq("business_id", businessId).eq("active", true),
         supabase.from("services").select("*").eq("business_id", businessId).eq("active", true),
@@ -2065,14 +2130,16 @@ function Dashboard({ businessId, business, go, refresh }) {
         supabase.from("daily_cash_additions").select("amount").eq("business_id", businessId).eq("addition_date", todayDateInput()),
         supabase.from("expenses").select("amount").eq("business_id", businessId).gte("expense_date", `${todayDateInput()}T00:00:00`).lte("expense_date", `${todayDateInput()}T23:59:59.999`),
         supabase.from("deposits").select("amount").eq("business_id", businessId).gte("deposit_date", `${todayDateInput()}T00:00:00`).lte("deposit_date", `${todayDateInput()}T23:59:59.999`),
+        supabase.from("credit_payment_records").select("amount,payment_method,paid_at").eq("business_id", businessId).gte("paid_at", startMonth.toISOString()).lt("paid_at", nextMonth.toISOString()),
       ]);
 
-      const [productsResult, servicesResult, salesResult, stockInResult, openingCashResult, cashAdditionsResult, expensesTodayResult, depositsTodayResult] = results;
+      const [productsResult, servicesResult, salesResult, stockInResult, openingCashResult, cashAdditionsResult, expensesTodayResult, depositsTodayResult, creditPaymentsResult] = results;
       for (const [label, result] of [
         ["products", productsResult], ["services", servicesResult],
         ["sales", salesResult], ["stock_in", stockInResult],
         ["daily_cash_openings", openingCashResult], ["daily_cash_additions", cashAdditionsResult],
         ["expenses today", expensesTodayResult], ["deposits today", depositsTodayResult],
+        ["credit payment records", creditPaymentsResult],
       ]) {
         if (result?.error) console.error(`Dashboard ${label} query failed:`, result.error);
       }
@@ -2096,23 +2163,27 @@ function Dashboard({ businessId, business, go, refresh }) {
         .filter((x) => x.currentStock <= number(x.reorder_level))
         .sort((a, b) => a.currentStock - b.currentStock);
 
-      const startToday = new Date();
-      startToday.setHours(0, 0, 0, 0);
-      const startMonth = new Date();
-      startMonth.setDate(1);
-      startMonth.setHours(0, 0, 0, 0);
-      const todaySales = s.filter((x) => x.sale_date && new Date(x.sale_date) >= startToday);
-      const monthSales = s.filter((x) => x.sale_date && new Date(x.sale_date) >= startMonth);
-      const todayCashSales = todaySales.filter((x) => x.payment_method === "CASH").reduce((a, x) => a + number(x.sales_total), 0);
+      const todaySales = s.filter((x) => x.sale_date && new Date(x.sale_date) >= startToday && new Date(x.sale_date) < tomorrow);
+      const monthSales = s.filter((x) => x.sale_date && new Date(x.sale_date) >= startMonth && new Date(x.sale_date) < nextMonth);
+      const paymentRows = creditPaymentsResult?.data || [];
+      const todayDebtCollections = paymentRows
+        .filter((x) => x.paid_at && new Date(x.paid_at) >= startToday && new Date(x.paid_at) < tomorrow)
+        .reduce((a, x) => a + number(x.amount), 0);
+      const monthDebtCollections = paymentRows.reduce((a, x) => a + number(x.amount), 0);
+      const todayCashSales = todaySales.filter((x) => String(x.payment_method || "").toUpperCase() === "CASH").reduce((a, x) => a + number(x.sales_total), 0);
+      const todayCashDebtPayments = paymentRows
+        .filter((x) => x.paid_at && new Date(x.paid_at) >= startToday && new Date(x.paid_at) < tomorrow && String(x.payment_method || "CASH").toUpperCase() === "CASH")
+        .reduce((a, x) => a + number(x.amount), 0);
       const openingCashValue = number(openingCashResult?.data?.opening_cash);
       const cashAddedValue = (cashAdditionsResult?.data || []).reduce((a, x) => a + number(x.amount), 0);
       const cashExpensesValue = (expensesTodayResult?.data || []).reduce((a, x) => a + number(x.amount), 0);
       const cashDepositsValue = (depositsTodayResult?.data || []).reduce((a, x) => a + number(x.amount), 0);
 
       setStats({
-        todaySales: todaySales.reduce((a, x) => a + number(x.sales_total), 0),
+        todaySales: todaySales.reduce((a, x) => a + number(x.sales_total), 0) + todayDebtCollections,
+        todayDebtCollections,
         todayProfit: todaySales.reduce((a, x) => a + number(x.profit), 0),
-        monthSales: monthSales.reduce((a, x) => a + number(x.sales_total), 0),
+        monthSales: monthSales.reduce((a, x) => a + number(x.sales_total), 0) + monthDebtCollections,
         monthProfit: monthSales.reduce((a, x) => a + number(x.profit), 0),
         products: p.length,
         services: serviceRows.length,
@@ -2122,7 +2193,7 @@ function Dashboard({ businessId, business, go, refresh }) {
         cashAdded: cashAddedValue,
         todayCashExpenses: cashExpensesValue,
         todayCashDeposits: cashDepositsValue,
-        drawerCash: openingCashValue + todayCashSales + cashAddedValue - cashExpensesValue - cashDepositsValue,
+        drawerCash: openingCashValue + todayCashSales + todayCashDebtPayments + cashAddedValue - cashExpensesValue - cashDepositsValue,
       });
       setAllLowProducts(low);
       setLowProducts(low.slice(0, 8));
@@ -2268,9 +2339,15 @@ function Dashboard({ businessId, business, go, refresh }) {
 
       <div className="stats-grid">
         <StatCard
-          title="Sales za Leo"
+          title="Sales + Malipo ya Madeni Leo"
           value={money(stats.todaySales)}
           icon="💰"
+          tone="blue"
+        />
+        <StatCard
+          title="Malipo ya Madeni Leo"
+          value={money(stats.todayDebtCollections)}
+          icon="💳"
           tone="blue"
         />
         <StatCard
@@ -2417,7 +2494,7 @@ function StatCard({ title, value, icon, tone = "blue" }) {
   );
 }
 
-function ProductsPage({ businessId, onChanged }) {
+function ProductsPage({ businessId, staff, onChanged }) {
   const [products, setProducts] = useState([]);
   const [stockIn, setStockIn] = useState([]);
   const [sales, setSales] = useState([]);
@@ -2578,6 +2655,7 @@ function ProductsPage({ businessId, onChanged }) {
   }
 
   async function deleteProduct(id, name) {
+    if (await requestDeleteApproval({ businessId, staff, table: "products", recordId: id, label: `Bidhaa: ${name}` })) return;
     if (!confirm(`Una uhakika unataka kufuta "${name}"?`)) return;
 
     const { error } = await supabase
@@ -3092,6 +3170,7 @@ function StockInPage({ businessId, staff, onChanged }) {
   }
 
   async function deleteRecord(id) {
+    if (await requestDeleteApproval({ businessId, staff, table: "stock_in", recordId: id, label: `Stock In record #${id}` })) return;
     if (!confirm("Futa hii Stock In record?")) return;
 
     const { error } = await supabase
@@ -3789,6 +3868,7 @@ function SalesPage({ businessId, staff, business, onChanged }) {
   }
 
   async function deleteSale(id) {
+    if (await requestDeleteApproval({ businessId, staff, table: "sales", recordId: id, label: `Sale #${id}` })) return;
     if (!confirm("Futa hii sale?")) return;
 
     const { error } = await supabase
@@ -4458,7 +4538,7 @@ function ReceiptModal({ receipt, business, onClose }) {
   );
 }
 
-function ServicesPage({ businessId, onChanged }) {
+function ServicesPage({ businessId, staff, onChanged }) {
   const [services, setServices] = useState([]);
   const [show, setShow] = useState(false);
   const [editingId, setEditingId] = useState(null);
@@ -4527,6 +4607,7 @@ function ServicesPage({ businessId, onChanged }) {
   }
 
   async function deleteService(id) {
+    if (await requestDeleteApproval({ businessId, staff, table: "services", recordId: id, label: `Service #${id}` })) return;
     if (!confirm("Futa service hii?")) return;
 
     const { error } = await supabase
@@ -4686,6 +4767,7 @@ function ExpensesPage({ businessId, staff, onChanged }) {
   }
 
   async function remove(id) {
+    if (await requestDeleteApproval({ businessId, staff, table: "expenses", recordId: id, label: `Expense #${id}` })) return;
     if (!confirm("Futa expense hii?")) return;
 
     const { error } = await supabase
@@ -4886,6 +4968,7 @@ function DepositsPage({ businessId, staff, onChanged }) {
   }
 
   async function remove(id) {
+    if (await requestDeleteApproval({ businessId, staff, table: "deposits", recordId: id, label: `Deposit #${id}` })) return;
     if (!confirm("Futa deposit hii?")) return;
 
     const { error } = await supabase
@@ -5518,7 +5601,7 @@ function ReportsPage({ businessId, refresh }) {
 }
 
 
-function CreditPage({ businessId, staff, refresh }) {
+function CreditPage({ businessId, staff, refresh, onChanged }) {
   const [credits, setCredits] = useState([]);
   const [products, setProducts] = useState([]);
   const [services, setServices] = useState([]);
@@ -5649,6 +5732,7 @@ function CreditPage({ businessId, staff, refresh }) {
       paid_amount: paidNow,
       balance,
       status: balance <= 0 ? "PAID" : paidNow > 0 ? "PARTIAL" : "UNPAID",
+      last_payment_at: paidNow > 0 ? new Date().toISOString() : null,
       due_date: form.due_date,
       note: buildStoredNote(validItems, form.note.trim()),
       created_by: staff?.id || null,
@@ -5656,10 +5740,23 @@ function CreditPage({ businessId, staff, refresh }) {
     if (error) {
       alert(error.message);
     } else {
+      let ledgerError = null;
+      if (paidNow > 0) {
+        const logged = await supabase.from("credit_payment_records").insert({
+          business_id: businessId,
+          credit_transaction_id: data.id,
+          amount: paidNow,
+          payment_method: "CASH",
+          created_by: staff?.id || null,
+        });
+        ledgerError = logged.error;
+      }
       const bill = { ...data, items: validItems.map(x => ({ name: getItemLabel(x), quantity: number(x.quantity), unit_price: getItemPrice(x), total: itemTotal(x) })) };
       resetBillForm();
       await load();
+      onChanged?.();
       setPrintBill(bill);
+      if (ledgerError) alert(`Bill imehifadhiwa, lakini malipo ya awali hayakuingia kwenye cash ledger: ${ledgerError.message}. Tafadhali usirudie kutengeneza bill; wasiliana na admin kabla ya cash closing.`);
     }
     setBusy(false);
   }
@@ -5667,11 +5764,17 @@ function CreditPage({ businessId, staff, refresh }) {
   async function payDebt(row) {
     const pay = number(paymentAmount);
     if (pay <= 0 || pay > number(row.balance)) { alert("Kiasi cha malipo si sahihi."); return; }
-    const paid = number(row.paid_amount) + pay;
-    const balance = Math.max(0, number(row.original_amount) - paid);
-    const { error } = await supabase.from("credit_transactions").update({ paid_amount: paid, balance, status: balance <= 0 ? "PAID" : "PARTIAL", last_payment_at: new Date().toISOString() }).eq("id", row.id).eq("business_id", businessId);
+    setBusy(true);
+    const { data: updatedCredit, error } = await supabase.rpc("record_credit_payment", {
+      p_credit_transaction_id: row.id,
+      p_amount: pay,
+      p_payment_method: "CASH",
+    });
+    setBusy(false);
     if (error) { alert(error.message); return; }
-    setPaying(null); setPaymentAmount(""); await load();
+    const paid = number(updatedCredit?.paid_amount ?? number(row.paid_amount) + pay);
+    const balance = number(updatedCredit?.balance ?? Math.max(0, number(row.balance) - pay));
+    setPaying(null); setPaymentAmount(""); await load(); onChanged?.();
     if (balance <= 0) sendPaidReceiptWhatsApp({ ...row, paid_amount: paid, balance: 0, status: "PAID" });
   }
 
@@ -5760,7 +5863,7 @@ function CreditPage({ businessId, staff, refresh }) {
     <div className="panel">
       <div className="toolbar"><input className="search-input" value={search} onChange={e=>setSearch(e.target.value)} placeholder="Tafuta mteja..." /><button className="secondary-btn small-btn" onClick={() => exportToExcel(filtered.map(x=>({Customer:x.customer_name,Phone:x.customer_phone||"",Item:itemName(x),Original:x.original_amount,Paid:x.paid_amount,Balance:x.balance,"Due Date":x.due_date||"",Status:creditStatus(x)})), `Bless-Stationery-Credits-${todayDateInput()}.xlsx`, "Credits")}>⬇ Export</button></div>
       <div className="table-wrap"><table><thead><tr><th>Mteja</th><th>Bill / Vitu</th><th>Deni</th><th>Amelipa</th><th>Salio</th><th>Due Date</th><th>Status</th><th>Action</th></tr></thead><tbody>
-        {filtered.map(x=><tr key={x.id}><td><strong>{x.customer_name}</strong><br/><small>{x.customer_phone || "-"}</small></td><td>{itemName(x)}{String(x.note||"").startsWith("BILL_ITEMS::") && <small className="bill-multiple-badge">Multiple Items</small>}</td><td>{money(x.original_amount)}</td><td>{money(x.paid_amount)}</td><td><strong>{money(x.balance)}</strong></td><td>{x.due_date || "-"}</td><td><span className={`status-chip ${creditStatus(x).toLowerCase()}`}>{creditStatus(x)}</span></td><td><div style={{display:"flex",gap:6,flexWrap:"wrap"}}><button className="secondary-btn small-btn" onClick={()=>printBillWindow(x)}>🖨 Print Bill</button>{number(x.balance)>0 ? <>{paying===x.id ? <div className="debt-payment-box"><div className="debt-payment-label">Ingiza kiasi alicholipa</div><input type="number" min="1" max={number(x.balance)} step="0.01" value={paymentAmount} onChange={e=>setPaymentAmount(e.target.value)} placeholder="Mfano 10000" /><div className="debt-payment-balance">Salio baada ya malipo: <strong>{money(Math.max(0, number(x.balance) - number(paymentAmount)))}</strong></div><div className="debt-payment-actions"><button className="primary-btn" onClick={()=>payDebt(x)}>Lipa</button><button className="secondary-btn" onClick={()=>{setPaying(null);setPaymentAmount("")}}>X</button></div></div> : <button className="secondary-btn small-btn" onClick={()=>{setPaying(x.id);setPaymentAmount("")}}>+ Malipo</button>}<button className="secondary-btn small-btn" onClick={()=>sendReminder(x)}>📲 Kumbusha</button></> : <button className="secondary-btn small-btn" onClick={()=>sendPaidReceiptWhatsApp(x)}>📲 Tuma Receipt</button>}</div></td></tr>)}
+        {filtered.map(x=><tr key={x.id}><td><strong>{x.customer_name}</strong><br/><small>{x.customer_phone || "-"}</small></td><td>{itemName(x)}{String(x.note||"").startsWith("BILL_ITEMS::") && <small className="bill-multiple-badge">Multiple Items</small>}</td><td>{money(x.original_amount)}</td><td>{money(x.paid_amount)}</td><td><strong>{money(x.balance)}</strong></td><td>{x.due_date || "-"}</td><td><span className={`status-chip ${creditStatus(x).toLowerCase()}`}>{creditStatus(x)}</span></td><td><div style={{display:"flex",gap:6,flexWrap:"wrap"}}><button className="secondary-btn small-btn" onClick={()=>printBillWindow(x)}>🖨 Print Bill</button>{number(x.balance)>0 ? <>{paying===x.id ? <div className="debt-payment-box"><div className="debt-payment-label">Ingiza kiasi alicholipa</div><input type="number" min="1" max={number(x.balance)} step="0.01" value={paymentAmount} onChange={e=>setPaymentAmount(e.target.value)} placeholder="Mfano 10000" /><div className="debt-payment-balance">Salio baada ya malipo: <strong>{money(Math.max(0, number(x.balance) - number(paymentAmount)))}</strong></div><div className="debt-payment-actions"><button className="primary-btn" disabled={busy} onClick={()=>payDebt(x)}>{busy ? "Inahifadhi..." : "Lipa"}</button><button className="secondary-btn" onClick={()=>{setPaying(null);setPaymentAmount("")}}>X</button></div></div> : <button className="secondary-btn small-btn" onClick={()=>{setPaying(x.id);setPaymentAmount("")}}>+ Malipo</button>}<button className="secondary-btn small-btn" onClick={()=>sendReminder(x)}>📲 Kumbusha</button></> : <button className="secondary-btn small-btn" onClick={()=>sendPaidReceiptWhatsApp(x)}>📲 Tuma Receipt</button>}</div></td></tr>)}
         {!filtered.length && <tr><td colSpan="8">Hakuna madeni yaliyopatikana.</td></tr>}
       </tbody></table></div>
     </div>
@@ -5813,7 +5916,7 @@ function AttendancePage({ businessId, staff, refresh }) {
   </div>;
 }
 
-function StaffPage({ businessId, refresh }) {
+function StaffPage({ businessId, refresh, currentStaff }) {
   const [staff, setStaff] = useState([]);
   const [showForm, setShowForm] = useState(false);
   const [search, setSearch] = useState("");
@@ -5884,6 +5987,7 @@ function StaffPage({ businessId, refresh }) {
   }
 
   async function deleteStaff(row) {
+    if (await requestDeleteApproval({ businessId, staff: currentStaff, table: "staff", recordId: row.id, label: `Staff profile: ${row.staff_name}` })) return;
     if (row.role === "ADMIN") {
       alert("Admin account haiwezi kufutwa hapa.");
       return;
@@ -6287,6 +6391,93 @@ function BusinessSettingsPage({ businessId, business, user, theme, setTheme, den
   );
 }
 
+
+function AdminMessageBanner({ businessId, user, staff }) {
+ const [items,setItems]=useState([]); const [dismissed,setDismissed]=useState([]);
+ useEffect(()=>{let live=true; async function load(){if(!businessId||!user?.id)return;const {data,error}=await supabase.from("admin_messages").select("id,message,created_at,is_important,target_user_id").eq("business_id",businessId).order("created_at",{ascending:false}).limit(5);if(!error&&live)setItems((data||[]).filter(m=>!m.target_user_id||m.target_user_id===user.id));}load();return()=>{live=false}},[businessId,user?.id]);
+ const shown=items.filter(m=>!dismissed.includes(m.id)); if(!shown.length)return null;
+ return <div style={{margin:"10px 18px 0",display:"grid",gap:8}}>{shown.map(m=><div key={m.id} role="status" style={{background:"#fff6d8",border:"1px solid #e5bd48",borderRadius:10,padding:"12px 14px",color:"#513f08"}}><div style={{display:"flex",alignItems:"center",justifyContent:"space-between",gap:10}}><strong>📢 Ujumbe kutoka ADMIN {m.is_important?"• MUHIMU":""}</strong><button type="button" onClick={()=>setDismissed(x=>[...x,m.id])} aria-label="Funga ujumbe">×</button></div><div style={{whiteSpace:"pre-wrap",marginTop:6}}>{m.message}</div><small>{formatDate(m.created_at)}</small></div>)}</div>;
+}
+
+function AdminMessagesPage({ businessId, staff, user }) {
+  const [messages, setMessages] = useState([]);
+  const [staffList, setStaffList] = useState([]);
+  const [body, setBody] = useState("");
+  const [target, setTarget] = useState("ALL");
+  const [busy, setBusy] = useState(false);
+  const isAdmin = String(staff?.role || "").toUpperCase() === "ADMIN";
+  async function load() {
+    if (!businessId) return;
+    const { data, error } = await supabase.from("admin_messages").select("*").eq("business_id", businessId).order("created_at", { ascending: false }).limit(100);
+    if (error) console.error("Admin messages load failed:", error); else setMessages(data || []);
+    if (isAdmin) {
+      const { data: people } = await supabase.from("staff").select("user_id,staff_name,role").eq("business_id", businessId).eq("active", true).order("staff_name");
+      setStaffList(people || []);
+    }
+  }
+  useEffect(() => { load(); }, [businessId, staff?.role]);
+  async function send(e) {
+    e.preventDefault();
+    if (!isAdmin) return alert("ADMIN pekee ndiye anayeweza kutuma ujumbe.");
+    if (!body.trim()) return alert("Andika ujumbe kwanza.");
+    setBusy(true);
+    const { error } = await supabase.from("admin_messages").insert({ business_id: businessId, sender_user_id: user.id, target_user_id: target === "ALL" ? null : target, message: body.trim(), is_important: true });
+    setBusy(false);
+    if (error) return alert("Ujumbe haukutumwa: " + error.message);
+    setBody(""); alert("Ujumbe umetumwa."); load();
+  }
+  async function markRead(row) {
+    const { error } = await supabase.from("admin_message_reads").upsert({ message_id: row.id, business_id: businessId, user_id: user.id, read_at: new Date().toISOString() }, { onConflict: "message_id,user_id" });
+    if (error) console.warn("Could not mark message read:", error);
+  }
+  const visible = messages.filter(m => !m.target_user_id || m.target_user_id === user.id || isAdmin);
+  return <div className="page-content"><PageTitle title="Admin Messages" subtitle="Tuma matangazo kwa staff au soma ujumbe uliotumwa." />
+    {isAdmin && <form className="panel" onSubmit={send} style={{display:"grid",gap:12}}><h3>✉ Tuma ujumbe kwa staff</h3><label>Mpokeaji<select value={target} onChange={e=>setTarget(e.target.value)}><option value="ALL">Staff wote</option>{staffList.filter(s=>s.user_id !== user.id).map(s=><option key={s.user_id} value={s.user_id}>{s.staff_name} ({s.role})</option>)}</select></label><label>Ujumbe<textarea rows={4} value={body} onChange={e=>setBody(e.target.value)} placeholder="Andika maelekezo au tangazo hapa..." required /></label><button className="primary-btn" disabled={busy}>{busy ? "Inatuma..." : "Tuma ujumbe"}</button></form>}
+    <div className="panel"><h3>Ujumbe na matangazo</h3>{visible.length ? visible.map(m=><article key={m.id} style={{border:"1px solid var(--border-color, #ddd)",borderRadius:10,padding:14,marginTop:10}}><div style={{display:"flex",justifyContent:"space-between",gap:10,flexWrap:"wrap"}}><strong>{m.is_important ? "📌 Tangazo muhimu" : "Ujumbe"}</strong><small>{formatDate(m.created_at)}</small></div><p style={{whiteSpace:"pre-wrap"}}>{m.message}</p><button type="button" className="secondary-btn" onClick={()=>markRead(m)}>Weka alama: Nimesoma</button></article>):<p>Hakuna ujumbe bado. Ujumbe mpya utaonekana hapa.</p>}</div>
+  </div>;
+}
+
+function HotspotLedgerPage({ businessId, staff, user }) {
+  const [rows, setRows] = useState([]); const [kind,setKind] = useState("SALE"); const [amount,setAmount] = useState(""); const [note,setNote] = useState(""); const [method,setMethod] = useState("CASH"); const [busy,setBusy] = useState(false); const [date,setDate] = useState(todayDateInput());
+  async function load(){ if(!businessId)return; const {data,error}=await supabase.from("hotspot_transactions").select("*").eq("business_id",businessId).gte("occurred_at",date+"T00:00:00").lte("occurred_at",date+"T23:59:59.999").order("occurred_at",{ascending:false}); if(error) console.error("Hotspot ledger load failed:",error); else setRows(data||[]); }
+  useEffect(()=>{load();},[businessId,date]);
+  const sum = (k) => rows.filter(r=>r.transaction_type===k).reduce((a,r)=>a+number(r.amount),0);
+  async function add(e){e.preventDefault();if(number(amount)<=0)return alert("Weka kiasi zaidi ya sifuri.");setBusy(true);const {error}=await supabase.from("hotspot_transactions").insert({business_id:businessId,transaction_type:kind,amount:number(amount),payment_method:method,note:note.trim()||null,created_by:user.id,occurred_at:new Date().toISOString()});setBusy(false);if(error)return alert("Imeshindikana kuhifadhi. Hakikisha SQL ya Hotspot imeendeshwa: "+error.message);setAmount("");setNote("");load();}
+  return <div className="page-content"><PageTitle title="Wi-Fi Hotspot Cash" subtitle="Rekodi na uangalie fedha za Hotspot tofauti na stationery." />
+    <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(160px,1fr))",gap:12,marginBottom:16}}>{[["Mauzo / mapato",sum("SALE")+sum("CAPITAL")],["Matumizi",sum("EXPENSE")],["Deposit",sum("DEPOSIT")],["Salio la siku",sum("SALE")+sum("CAPITAL")-sum("EXPENSE")-sum("DEPOSIT")]].map(([label,val])=><div className="panel" key={label}><small>{label}</small><h3>{money(val)}</h3></div>)}</div>
+    <form className="panel" onSubmit={add} style={{display:"grid",gap:12}}><h3>Rekodi muamala wa Hotspot</h3><label>Tarehe ya kuangalia<input type="date" value={date} onChange={e=>setDate(e.target.value)} /></label><label>Aina ya muamala<select value={kind} onChange={e=>setKind(e.target.value)}><option value="SALE">Mauzo / mapato ya Hotspot</option><option value="CAPITAL">Mtaji / fedha iliyoongezwa</option><option value="EXPENSE">Matumizi ya Hotspot</option><option value="DEPOSIT">Deposit ya Hotspot</option></select></label><label>Kiasi (TZS)<input type="number" min="1" step="1" value={amount} onChange={e=>setAmount(e.target.value)} required /></label><label>Njia ya malipo<select value={method} onChange={e=>setMethod(e.target.value)}><option value="CASH">CASH</option><option value="M-PESA">M-PESA</option><option value="BANK">BANK</option><option value="OTHER">OTHER</option></select></label><label>Maelezo<input value={note} onChange={e=>setNote(e.target.value)} placeholder="Mfano: kifurushi cha mteja / matumizi" /></label><button className="primary-btn" disabled={busy}>{busy?"Inahifadhi...":"Hifadhi muamala"}</button><p style={{fontSize:12}}>Hesabu hizi ni ledger tofauti ya Hotspot; hazijachanganywa na mauzo au deposit za stationery. Kwa sasa rekodi zinaingizwa hapa kwa mkono, si kutoka Airtel ODU moja kwa moja.</p></form>
+    <div className="panel"><h3>Historia ya siku — {date}</h3>{rows.length?<div style={{overflowX:"auto"}}><table><thead><tr><th>Muda</th><th>Aina</th><th>Maelezo</th><th>Njia</th><th>Kiasi</th></tr></thead><tbody>{rows.map(r=><tr key={r.id}><td>{formatDate(r.occurred_at)}</td><td>{r.transaction_type}</td><td>{r.note||"-"}</td><td>{r.payment_method||"-"}</td><td>{money(r.amount)}</td></tr>)}</tbody></table></div>:<p>Hakuna miamala ya Hotspot kwa tarehe hii.</p>}</div>
+  </div>;
+}
+
+function ApprovalRequestsPage({ businessId, staff, user }) {
+ const [rows,setRows]=useState([]);const [reason,setReason]=useState("");const [action,setAction]=useState("CHANGE");const [details,setDetails]=useState("");const [busy,setBusy]=useState(false);const isAdmin=String(staff?.role||"").toUpperCase()==="ADMIN";
+ async function load(){if(!businessId)return;const {data,error}=await supabase.from("admin_approval_requests").select("*").eq("business_id",businessId).order("created_at",{ascending:false}).limit(100);if(error)console.error("Approval request load failed:",error);else setRows(data||[])}
+ useEffect(()=>{load()},[businessId]);
+ async function submit(e){e.preventDefault();if(!reason.trim())return alert("Andika sababu ya ombi.");setBusy(true);const {error}=await supabase.from("admin_approval_requests").insert({business_id:businessId,requester_user_id:user.id,request_type:action,details:details.trim()||null,reason:reason.trim(),status:"PENDING"});setBusy(false);if(error)return alert("Ombi halikuhifadhiwa. Hakikisha SQL imeendeshwa: "+error.message);setReason("");setDetails("");load();}
+ async function decide(row,status){
+   const note=window.prompt(status==="APPROVED"?"Maelezo ya kuidhinisha (hiari):":"Sababu ya kukataa:","");
+   if(status==="REJECTED"&&!note?.trim())return alert("Andika sababu ya kukataa.");
+   if(status==="APPROVED" && row.request_type==="DELETE"){
+     const allowedTables = ["products","stock_in","sales","services","expenses","deposits","staff"];
+     if(!row.target_table || !row.target_record_id || !allowedTables.includes(row.target_table)){
+       return alert("Ombi hili halina jedwali/rekodi salama iliyotambuliwa. Hakuna kilichofutwa; kagua ombi na schema.");
+     }
+     if(row.target_table==="staff" && row.target_record_id){
+       const {data: targetStaff, error: targetError} = await supabase.from("staff").select("role").eq("id",row.target_record_id).eq("business_id",businessId).maybeSingle();
+       if(targetError) return alert("Imeshindikana kukagua staff: "+targetError.message);
+       if(targetStaff?.role==="ADMIN") return alert("Akaunti ya ADMIN haiwezi kufutwa kupitia ombi hili.");
+     }
+     const {error: deleteError}=await supabase.from(row.target_table).delete().eq("id",row.target_record_id).eq("business_id",businessId);
+     if(deleteError) return alert("Ufutaji umeshindikana; ombi limeachwa PENDING. Sababu: "+deleteError.message);
+   }
+   const {error}=await supabase.from("admin_approval_requests").update({status,reviewed_by:user.id,reviewed_at:new Date().toISOString(),admin_note:note||null}).eq("id",row.id).eq("business_id",businessId);
+   if(error)return alert("Taarifa imefutwa/hatua imefanyika, lakini hali ya ombi haikuweza kusasishwa: "+error.message);
+   load();
+ }
+ return <div className="page-content"><PageTitle title="Approval Requests" subtitle="Staff aandike sababu ya ombi; ADMIN apitie na kuamua."/><form className="panel" onSubmit={submit} style={{display:"grid",gap:12}}><h3>Omba ruhusa ya mabadiliko</h3><label>Aina ya ombi<select value={action} onChange={e=>setAction(e.target.value)}><option value="CHANGE">Kubadilisha taarifa</option><option value="DELETE">Kuomba kufuta taarifa</option><option value="CASH_ADJUSTMENT">Marekebisho ya fedha</option><option value="OTHER">Jingine</option></select></label><label>Taarifa/rekodi husika<textarea rows={2} value={details} onChange={e=>setDetails(e.target.value)} placeholder="Eleza rekodi gani inahusika" /></label><label>Sababu ya ombi (inahitajika)<textarea rows={3} value={reason} onChange={e=>setReason(e.target.value)} placeholder="Kwa nini unahitaji kufuta au kubadilisha taarifa?" required /></label><button className="primary-btn" disabled={busy}>{busy?"Inatuma...":"Tuma ombi kwa ADMIN"}</button><p style={{fontSize:12}}>Maombi ya kufuta yanayowasilishwa kupitia vitufe vilivyounganishwa hapa hayafuti taarifa moja kwa moja. ADMIN lazima aidhinishe kwanza.</p></form><div className="panel"><h3>Historia ya maombi</h3>{rows.length?rows.map(r=><article key={r.id} style={{border:"1px solid #ddd",borderRadius:8,padding:12,marginTop:10}}><strong>{r.request_type} — {r.status}</strong><p><b>Sababu:</b> {r.reason}</p>{r.details&&<p><b>Rekodi:</b> {r.details}</p>}{r.admin_note&&<p><b>Maelezo ya ADMIN:</b> {r.admin_note}</p>}<small>{formatDate(r.created_at)}</small>{isAdmin&&r.status==="PENDING"&&<div style={{display:"flex",gap:8,marginTop:10}}><button type="button" className="primary-btn" onClick={()=>decide(r,"APPROVED")}>Approve</button><button type="button" className="secondary-btn" onClick={()=>decide(r,"REJECTED")}>Reject</button></div>}</article>):<p>Hakuna maombi kwa sasa.</p>}</div></div>;
+}
+
 function PasswordField({ label, value, onChange, show, setShow }) {
   return (
     <div className="field password-settings-field">
@@ -6543,7 +6734,7 @@ function AnalyticsPage({ businessId, refresh }) {
 function CashClosingPage({ businessId, refresh }) {
   const [date, setDate] = useState(todayDateInput());
   const [actualCash, setActualCash] = useState("");
-  const [records, setRecords] = useState({ sales: [], expenses: [], deposits: [], credits: [], opening: null, additions: [] });
+  const [records, setRecords] = useState({ sales: [], expenses: [], deposits: [], creditPayments: [], opening: null, additions: [] });
   const [loading, setLoading] = useState(true);
 
   useEffect(() => { load(); }, [businessId, refresh, date]);
@@ -6559,33 +6750,35 @@ function CashClosingPage({ businessId, refresh }) {
     setLoading(true);
     const start = `${date}T00:00:00`;
     const end = `${date}T23:59:59.999`;
-    const [salesRes, expenseRes, depositRes, creditRes, openingRes, additionsRes] = await Promise.all([
+    const paymentStart = new Date(`${date}T00:00:00`).toISOString();
+    const paymentEnd = new Date(`${date}T23:59:59.999`).toISOString();
+    const [salesRes, expenseRes, depositRes, creditPaymentsRes, openingRes, additionsRes] = await Promise.all([
       supabase.from("sales").select("*").eq("business_id", businessId).gte("sale_date", start).lte("sale_date", end),
       supabase.from("expenses").select("*").eq("business_id", businessId).gte("expense_date", start).lte("expense_date", end),
       supabase.from("deposits").select("*").eq("business_id", businessId).gte("deposit_date", start).lte("deposit_date", end),
-      supabase.from("credit_transactions").select("*").eq("business_id", businessId),
+      supabase.from("credit_payment_records").select("*").eq("business_id", businessId).gte("paid_at", paymentStart).lte("paid_at", paymentEnd),
       supabase.from("daily_cash_openings").select("*").eq("business_id", businessId).eq("opening_date", date).maybeSingle(),
       supabase.from("daily_cash_additions").select("*").eq("business_id", businessId).eq("addition_date", date),
     ]);
     if (salesRes.error) alert(salesRes.error.message);
     if (expenseRes.error) alert(expenseRes.error.message);
     if (depositRes.error) alert(depositRes.error.message);
+    if (creditPaymentsRes.error) alert(`Imeshindwa kusoma malipo ya madeni. Hakikisha umeendesha SQL ya Credit Payment Ledger: ${creditPaymentsRes.error.message}`);
     if (additionsRes.error) console.error("Cash closing additions load error:", additionsRes.error);
-    setRecords({ sales: salesRes.data || [], expenses: expenseRes.data || [], deposits: depositRes.data || [], credits: creditRes.data || [], opening: openingRes.data || null, additions: additionsRes.data || [] });
+    setRecords({ sales: salesRes.data || [], expenses: expenseRes.data || [], deposits: depositRes.data || [], creditPayments: creditPaymentsRes.data || [], opening: openingRes.data || null, additions: additionsRes.data || [] });
     setLoading(false);
   }
 
-  const cashSales = records.sales.filter((x) => x.payment_method === "CASH").reduce((a,x)=>a+number(x.sales_total),0);
-  const creditPaidToday = records.credits.filter((x) => String(x.created_at || "").slice(0,10) === date).reduce((a,x)=>a+number(x.paid_amount),0);
+  const cashSales = records.sales.filter((x) => String(x.payment_method || "").toUpperCase() === "CASH").reduce((a,x)=>a+number(x.sales_total),0);
+  const cashDebtPayments = records.creditPayments.filter((x) => String(x.payment_method || "CASH").toUpperCase() === "CASH").reduce((a,x)=>a+number(x.amount),0);
   const cashExpenses = records.expenses.reduce((a,x)=>a+number(x.amount),0);
   // Deposit records represent money removed from the drawer and transferred to the bank.
   const cashDeposits = records.deposits.reduce((a,x)=>a+number(x.amount),0);
   const openingCashAmount = number(records.opening?.opening_cash);
   const cashAddedAmount = records.additions.reduce((a, x) => a + number(x.amount), 0);
-  const cashBeforeDeposit = openingCashAmount + cashSales + cashAddedAmount - cashExpenses;
+  const cashBeforeDeposit = openingCashAmount + cashSales + cashDebtPayments + cashAddedAmount - cashExpenses;
   const knownMovement = cashBeforeDeposit - cashDeposits;
   const difference = actualCash === "" ? null : number(actualCash) - knownMovement;
-  const debtPaymentsAll = records.credits.filter((x) => String(x.last_payment_at || "").slice(0,10) === date).reduce((a,x)=>a+number(x.paid_amount),0);
 
   function saveCount(value) {
     setActualCash(value);
@@ -6622,7 +6815,7 @@ function CashClosingPage({ businessId, refresh }) {
         header, .grid, .total, .signatures { page-break-inside: avoid !important; break-inside: avoid !important; }
       }
     </style></head><body><main class="sheet"><header><h1>Bless Stationery</h1><div class="subtitle">Daily Cash Closing | Tarehe: ${escapeHtml(date)}</div></header>
-      <section class="grid"><div class="card"><div class="label">Opening Cash</div><strong>${escapeHtml(money(openingCashAmount))}</strong></div><div class="card"><div class="label">Cash Sales</div><strong>${escapeHtml(money(cashSales))}</strong></div><div class="card"><div class="label">Cash Added (Change)</div><strong>${escapeHtml(money(cashAddedAmount))}</strong></div><div class="card"><div class="label">Cash Before Deposit</div><strong>${escapeHtml(money(cashBeforeDeposit))}</strong></div><div class="card"><div class="label">Expenses</div><strong>${escapeHtml(money(cashExpenses))}</strong></div><div class="card"><div class="label">Cash Deposited to Bank</div><strong>${escapeHtml(money(cashDeposits))}</strong></div></section>
+      <section class="grid"><div class="card"><div class="label">Opening Cash</div><strong>${escapeHtml(money(openingCashAmount))}</strong></div><div class="card"><div class="label">Cash Sales</div><strong>${escapeHtml(money(cashSales))}</strong></div><div class="card"><div class="label">Debt Payments Collected</div><strong>${escapeHtml(money(cashDebtPayments))}</strong></div><div class="card"><div class="label">Cash Added (Change)</div><strong>${escapeHtml(money(cashAddedAmount))}</strong></div><div class="card"><div class="label">Cash Before Deposit</div><strong>${escapeHtml(money(cashBeforeDeposit))}</strong></div><div class="card"><div class="label">Expenses</div><strong>${escapeHtml(money(cashExpenses))}</strong></div><div class="card"><div class="label">Cash Deposited to Bank</div><strong>${escapeHtml(money(cashDeposits))}</strong></div></section>
       <section class="total"><div class="total-row"><span>Expected Cash in Drawer</span><strong>${escapeHtml(money(knownMovement))}</strong></div><div class="total-row"><span>Actual Cash Counted</span><strong>${escapeHtml(money(actualCash))}</strong></div><div class="total-row"><span>Difference</span><strong class="difference">${escapeHtml(difference === null ? "-" : money(difference))}</strong></div></section>
       <section class="signatures"><div class="sign-line">Prepared by / Saini</div><div class="sign-line">Checked by / Saini</div></section></main><script>window.onload=()=>{window.focus();window.print();}</script></body></html>`);
     win.document.close();
@@ -6636,20 +6829,17 @@ function CashClosingPage({ businessId, refresh }) {
       <div className="stats-grid">
         <StatCard title="Opening Cash" value={money(openingCashAmount)} icon="🌅" tone="purple" />
         <StatCard title="Cash Sales" value={money(cashSales)} icon="💵" tone="blue" />
+        <StatCard title="Malipo ya Madeni" value={money(cashDebtPayments)} icon="💳" tone="blue" />
         <StatCard title="Fedha Iliyoongezwa" value={money(cashAddedAmount)} icon="➕" tone="blue" />
         <StatCard title="Cash Before Deposit" value={money(cashBeforeDeposit)} icon="🧮" tone={cashBeforeDeposit >= 0 ? "green" : "red"} />
         <StatCard title="Expenses" value={money(cashExpenses)} icon="💸" tone="red" />
         <StatCard title="Deposits to Bank" value={money(cashDeposits)} icon="🏦" tone="purple" />
-      </div>
-      <div className="notice" style={{ marginBottom: 16 }}>
-Hesabu ya cash inaongeza fedha ya mwanzo, mauzo ya CASH na fedha zilizoongezwa kwa ajili ya chenji, kisha inatoa matumizi na deposit zilizowekwa benki. Marejesho ya madeni hayajaongezwa kwenye hesabu hii kwa sababu historia ya malipo yake inahitaji kufuatiliwa tofauti.
       </div>
       <div className="panel cash-closing-summary">
         <div><span>Known Cash Movement</span><strong>{money(knownMovement)}</strong></div>
         <div><span>Actual Cash Count</span><strong>{actualCash === "" ? "-" : money(actualCash)}</strong></div>
         <div><span>Difference</span><strong className={difference === null ? "" : difference === 0 ? "stock-ok" : "stock-danger"}>{difference === null ? "-" : money(difference)}</strong></div>
       </div>
-      {debtPaymentsAll > 0 && <div className="notice">Kumbuka: kuna records zenye <strong>last_payment_at</strong> tarehe hii. Mfumo wa sasa hauna payment-history table, kwa hiyo hatutaki kuzidisha hesabu ya cash kwa kutumia paid_amount ya cumulative.</div>}
     </div>
   );
 }
