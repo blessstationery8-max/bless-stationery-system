@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { supabase } from "./lib/supabase";
 import * as XLSX from "xlsx";
 import "./App.css";
@@ -1165,6 +1165,7 @@ function System({ user }) {
     customerCredits: <CustomerCreditsPage businessId={businessId} staff={staff} refresh={refresh} />,
     payables: <PayablesPage businessId={businessId} staff={staff} refresh={refresh} />,
     attendance: <AttendancePage businessId={businessId} staff={staff} refresh={refresh} />,
+    hrPayroll: <HRPayrollPage businessId={businessId} staff={staff} user={user} refresh={refresh} onChanged={() => setRefresh((x) => x + 1)} />,
     settings: (
       <BusinessSettingsPage
         businessId={businessId}
@@ -1381,6 +1382,13 @@ function System({ user }) {
             icon="🕐"
             text="Staff Attendance"
             onClick={() => go("attendance")}
+          />
+
+          <NavButton
+            active={page === "hrPayroll"}
+            icon="🧾"
+            text="HR & Payroll"
+            onClick={() => go("hrPayroll")}
           />
 
           <NavButton
@@ -5916,6 +5924,198 @@ function AttendancePage({ businessId, staff, refresh }) {
   </div>;
 }
 
+function SignaturePad({ label, onSignature }) {
+  const canvasRef = useRef(null);
+  const drawing = useRef(false);
+  const hasInk = useRef(false);
+  const point = (event) => {
+    const canvas = canvasRef.current;
+    const rect = canvas.getBoundingClientRect();
+    return { x: (event.clientX - rect.left) * canvas.width / rect.width, y: (event.clientY - rect.top) * canvas.height / rect.height };
+  };
+  function start(event) {
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+    event.preventDefault();
+    canvas.setPointerCapture?.(event.pointerId);
+    const ctx = canvas.getContext("2d");
+    const p = point(event);
+    ctx.beginPath(); ctx.moveTo(p.x, p.y); drawing.current = true; hasInk.current = true;
+  }
+  function move(event) {
+    if (!drawing.current || !canvasRef.current) return;
+    event.preventDefault();
+    const ctx = canvasRef.current.getContext("2d");
+    const p = point(event);
+    ctx.lineWidth = 2.5; ctx.lineCap = "round"; ctx.lineJoin = "round"; ctx.strokeStyle = "#172554";
+    ctx.lineTo(p.x, p.y); ctx.stroke();
+  }
+  function end() {
+    drawing.current = false;
+    if (hasInk.current && canvasRef.current) onSignature(canvasRef.current.toDataURL("image/png"));
+  }
+  function clear() {
+    const canvas = canvasRef.current;
+    if (canvas) canvas.getContext("2d").clearRect(0, 0, canvas.width, canvas.height);
+    hasInk.current = false; onSignature("");
+  }
+  return <div style={{ marginTop: 12 }}><label style={{ display: "block", fontWeight: 700, marginBottom: 6 }}>{label}</label><canvas ref={canvasRef} width={600} height={150} onPointerDown={start} onPointerMove={move} onPointerUp={end} onPointerCancel={end} style={{ width: "100%", maxWidth: 600, height: 150, display: "block", border: "1px dashed #8995a8", borderRadius: 10, background: "#fff", touchAction: "none", cursor: "crosshair" }} /><div style={{ display: "flex", gap: 8, alignItems: "center", marginTop: 6 }}><small style={{ color: "#64748b" }}>Chora saini yako ndani ya kisanduku.</small><button type="button" className="secondary-btn" onClick={clear}>Futa saini</button></div></div>;
+}
+
+function HRPayrollPage({ businessId, staff, user, refresh, onChanged }) {
+  const [tab, setTab] = useState("contracts");
+  const [people, setPeople] = useState([]);
+  const [contracts, setContracts] = useState([]);
+  const [payments, setPayments] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+  const [contractForm, setContractForm] = useState({ staff_id: "", contract_number: "", job_title: "", employment_type: "PERMANENT", start_date: todayDateInput(), end_date: "", salary_amount: "", pay_frequency: "MONTHLY", terms: "" });
+  const [paymentForm, setPaymentForm] = useState({ staff_id: "", contract_id: "", receipt_number: "", pay_period_start: new Date().toISOString().slice(0,7)+"-01", pay_period_end: todayDateInput(), gross_amount: "", deductions_amount: "0", payment_method: "CASH", payment_reference: "", notes: "" });
+  const [signature, setSignature] = useState("");
+  const [activeSignatureAction, setActiveSignatureAction] = useState(null);
+  const isAdmin = String(staff?.role || "").toUpperCase() === "ADMIN";
+  const moneyHR = (v) => `TZS ${new Intl.NumberFormat("en-TZ").format(Number(v || 0))}`;
+
+  useEffect(() => { loadHR(); }, [businessId, refresh]);
+  async function loadHR() {
+    if (!businessId || !staff?.id) { setLoading(false); return; }
+    setLoading(true); setError("");
+    const [p, c, pay] = await Promise.all([
+      supabase.from("staff").select("id,staff_name,role,user_id,active,business_id").eq("business_id", businessId).eq("active", true).order("staff_name"),
+      supabase.from("employment_contracts").select("*").eq("business_id", businessId).order("created_at", { ascending: false }),
+      supabase.from("salary_payments").select("*").eq("business_id", businessId).order("created_at", { ascending: false }),
+    ]);
+    const failed = [p,c,pay].find(x => x.error);
+    if (failed) setError(failed.error.message || "Imeshindikana kupakia HR & Payroll. Hakikisha SQL migration imeendeshwa Supabase kwanza.");
+    setPeople(p.data || []); setContracts(c.data || []); setPayments(pay.data || []); setLoading(false);
+  }
+  function setCF(key, value) { setContractForm(old => ({...old, [key]: value})); }
+  function setPF(key, value) { setPaymentForm(old => ({...old, [key]: value})); }
+  async function createContract(e) {
+    e.preventDefault();
+    if (!isAdmin) return alert("ADMIN pekee ndiye anayeweza kuandaa mkataba.");
+    if (!contractForm.staff_id || !contractForm.job_title.trim() || Number(contractForm.salary_amount) < 0) return alert("Jaza mfanyakazi, nafasi na mshahara.");
+    setBusy(true);
+    const contractNumber = contractForm.contract_number.trim() || `EMP-${Date.now().toString().slice(-8)}`;
+    const { error: err } = await supabase.from("employment_contracts").insert({ business_id: businessId, staff_id: contractForm.staff_id, contract_number: contractNumber, job_title: contractForm.job_title.trim(), employment_type: contractForm.employment_type, start_date: contractForm.start_date, end_date: contractForm.end_date || null, salary_amount: Number(contractForm.salary_amount), pay_frequency: contractForm.pay_frequency, terms: contractForm.terms, status: "DRAFT", created_by: user.id });
+    setBusy(false);
+    if (err) return alert(`Mkataba haujahifadhiwa: ${err.message}`);
+    setContractForm({ staff_id: "", contract_number: "", job_title: "", employment_type: "PERMANENT", start_date: todayDateInput(), end_date: "", salary_amount: "", pay_frequency: "MONTHLY", terms: "" });
+    await loadHR(); onChanged?.(); alert("Mkataba umehifadhiwa kama DRAFT. Mwajiri atie saini kwanza.");
+  }
+  async function employerSignContract(row) {
+    if (!signature) return alert("Chora saini ya mwajiri kwanza.");
+    if (!window.confirm(`Unathibitisha kusaini mkataba ${row.contract_number} kama mwajiri?`)) return;
+    setBusy(true); const { error: err } = await supabase.rpc("admin_sign_employment_contract", { p_contract_id: row.id, p_signature_data: signature }); setBusy(false); setSignature("");
+    if (err) return alert(`Saini haikuhifadhiwa: ${err.message}`);
+    await loadHR(); alert("Saini ya mwajiri imehifadhiwa. Mkataba sasa unasubiri saini ya mfanyakazi.");
+  }
+  async function employeeSignContract(row) {
+    if (!signature) return alert("Chora saini yako kwanza.");
+    if (!window.confirm("Unakubali masharti ya mkataba huu na kusaini?")) return;
+    setBusy(true); const { error: err } = await supabase.rpc("employee_sign_employment_contract", { p_contract_id: row.id, p_signature_data: signature }); setBusy(false); setSignature("");
+    if (err) return alert(`Saini haikuhifadhiwa: ${err.message}`);
+    await loadHR(); alert("Umesaini mkataba. Mkataba sasa umewekwa ACTIVE.");
+  }
+  async function createPayment(e) {
+    e.preventDefault();
+    if (!isAdmin) return alert("ADMIN pekee ndiye anayeweza kuandaa malipo ya mshahara.");
+    const gross = Number(paymentForm.gross_amount), deductions = Number(paymentForm.deductions_amount || 0);
+    if (!paymentForm.staff_id || !paymentForm.pay_period_start || !paymentForm.pay_period_end || !(gross >= 0) || !(deductions >= 0) || deductions > gross) return alert("Kagua mfanyakazi, kipindi, mshahara na makato.");
+    setBusy(true);
+    const receipt = paymentForm.receipt_number.trim() || `SAL-${Date.now().toString().slice(-8)}`;
+    const { error: err } = await supabase.from("salary_payments").insert({ business_id: businessId, staff_id: paymentForm.staff_id, contract_id: paymentForm.contract_id || null, receipt_number: receipt, pay_period_start: paymentForm.pay_period_start, pay_period_end: paymentForm.pay_period_end, gross_amount: gross, deductions_amount: deductions, payment_method: paymentForm.payment_method, payment_reference: paymentForm.payment_reference.trim() || null, notes: paymentForm.notes.trim(), status: "DRAFT", created_by: user.id });
+    setBusy(false);
+    if (err) return alert(`Malipo hayajahifadhiwa: ${err.message}`);
+    setPaymentForm({ staff_id: "", contract_id: "", receipt_number: "", pay_period_start: new Date().toISOString().slice(0,7)+"-01", pay_period_end: todayDateInput(), gross_amount: "", deductions_amount: "0", payment_method: "CASH", payment_reference: "", notes: "" });
+    await loadHR(); alert("Rekodi ya mshahara imehifadhiwa kama DRAFT; haijaingia kwenye Daily Cash.");
+  }
+  async function markPaid(row) {
+    if (!signature) return alert("Chora saini ya mwajiri kwanza.");
+    if (!window.confirm(`Thibitisha kuwa mshahara ${row.receipt_number} umelipwa kwa njia ya ${row.payment_method}?`)) return;
+    setBusy(true); const { error: err } = await supabase.rpc("admin_mark_salary_paid", { p_salary_payment_id: row.id, p_signature_data: signature, p_paid_at: new Date().toISOString(), p_payment_reference: row.payment_reference || null }); setBusy(false); setSignature("");
+    if (err) return alert(`Malipo hayajathibitishwa: ${err.message}`);
+    await loadHR(); alert("Malipo yamethibitishwa na mwajiri. Mfanyakazi sasa anaweza kusaini kupokea.");
+  }
+  async function acknowledge(row) {
+    if (!signature) return alert("Chora saini ya mfanyakazi kwanza.");
+    if (!window.confirm("Unathibitisha kuwa umepokea mshahara huu?")) return;
+    setBusy(true); const { error: err } = await supabase.rpc("employee_acknowledge_salary_payment", { p_salary_payment_id: row.id, p_signature_data: signature }); setBusy(false); setSignature("");
+    if (err) return alert(`Uthibitisho haujahifadhiwa: ${err.message}`);
+    await loadHR(); alert("Umesaini kuthibitisha kupokea mshahara.");
+  }
+  function printDocument(title, body) {
+    const w = window.open("", "_blank", "width=900,height=700");
+    if (!w) return alert("Ruhusu pop-up ili kuchapisha.");
+    w.document.write(`<!doctype html><html><head><title>${title}</title><style>body{font-family:Arial,sans-serif;color:#111827;padding:32px;line-height:1.5}h1,h2{color:#172554}.line{border-bottom:1px solid #94a3b8;padding:8px 0}.sign{margin-top:45px;display:grid;grid-template-columns:1fr 1fr;gap:40px}img{max-width:260px;max-height:90px}.muted{color:#64748b;font-size:12px}@media print{button{display:none}}</style></head><body>${body}<p class="muted">Generated by Bless Stationery Management System</p><script>window.onload=()=>window.print()<\/script></body></html>`);
+    w.document.close();
+  }
+  function printContract(row) {
+    const person = people.find(p => p.id === row.staff_id);
+    const body = `<h1>EMPLOYMENT CONTRACT</h1><h2>Bless Stationery</h2><div class="line"><b>Contract No:</b> ${escapeHtml(row.contract_number)}</div><div class="line"><b>Employee:</b> ${escapeHtml(person?.staff_name || "Employee")}</div><div class="line"><b>Position:</b> ${escapeHtml(row.job_title)}</div><div class="line"><b>Employment type:</b> ${escapeHtml(row.employment_type)}</div><div class="line"><b>Start date:</b> ${escapeHtml(row.start_date)} &nbsp; <b>End date:</b> ${escapeHtml(row.end_date || "Open-ended")}</div><div class="line"><b>Salary:</b> ${moneyHR(row.salary_amount)} / ${escapeHtml(row.pay_frequency)}</div><h3>Terms and Conditions</h3><p>${escapeHtml(row.terms || "As agreed by the employer and employee.").replace(/\n/g,"<br>")}</p><div class="sign"><div><b>Employer signature</b><br>${row.employer_signature_data ? `<img src="${row.employer_signature_data}">` : "______________________"}<p>Date: ${escapeHtml(row.employer_signed_at || "Pending")}</p></div><div><b>Employee signature</b><br>${row.employee_signature_data ? `<img src="${row.employee_signature_data}">` : "______________________"}<p>Date: ${escapeHtml(row.employee_signed_at || "Pending")}</p></div></div>`;
+    printDocument("Employment Contract", body);
+  }
+  function printSalary(row) {
+    const person = people.find(p => p.id === row.staff_id);
+    const body = `<h1>SALARY PAYMENT ACKNOWLEDGMENT</h1><h2>Bless Stationery</h2><div class="line"><b>Receipt No:</b> ${escapeHtml(row.receipt_number)}</div><div class="line"><b>Employee:</b> ${escapeHtml(person?.staff_name || "Employee")}</div><div class="line"><b>Pay period:</b> ${escapeHtml(row.pay_period_start)} to ${escapeHtml(row.pay_period_end)}</div><div class="line"><b>Gross salary:</b> ${moneyHR(row.gross_amount)}</div><div class="line"><b>Deductions:</b> ${moneyHR(row.deductions_amount)}</div><div class="line"><b>Net paid:</b> <strong>${moneyHR(row.net_amount)}</strong></div><div class="line"><b>Method:</b> ${escapeHtml(row.payment_method)} &nbsp; <b>Reference:</b> ${escapeHtml(row.payment_reference || "-")}</div><div class="sign"><div><b>Employer authorization</b><br>${row.employer_signature_data ? `<img src="${row.employer_signature_data}">` : "______________________"}<p>Date: ${escapeHtml(row.employer_signed_at || "Pending")}</p></div><div><b>Employee acknowledgment</b><br>${row.employee_signature_data ? `<img src="${row.employee_signature_data}">` : "______________________"}<p>Date: ${escapeHtml(row.employee_signed_at || "Pending")}</p></div></div>`;
+    printDocument("Salary Payment Acknowledgment", body);
+  }
+  const ownContracts = contracts.filter(c => isAdmin || c.staff_id === staff?.id);
+  const ownPayments = payments.filter(p => isAdmin || p.staff_id === staff?.id);
+  const statusLabel = (s) => ({DRAFT:"DRAFT",PENDING_EMPLOYEE:"WAITING FOR EMPLOYEE SIGNATURE",ACTIVE:"ACTIVE",PAID:"PAID — WAITING FOR ACKNOWLEDGMENT",ACKNOWLEDGED:"ACKNOWLEDGED",EXPIRED:"EXPIRED",TERMINATED:"TERMINATED",VOID:"VOID"}[s] || s);
+
+  return <div className="page-content">
+    <PageTitle title="HR & Payroll" subtitle="Employment contracts, salary records and separate employee acknowledgments." />
+    <div className="stats-grid small-stats">
+      <StatCard title="Active Staff" value={people.length} icon="👥" tone="green" />
+      <StatCard title="Contracts" value={ownContracts.length} icon="📄" tone="blue" />
+      <StatCard title="Awaiting Signature" value={ownContracts.filter(c=>c.status==="PENDING_EMPLOYEE").length + ownPayments.filter(p=>p.status==="PAID").length} icon="✍️" tone="orange" />
+      <StatCard title="Acknowledged Payroll" value={ownPayments.filter(p=>p.status==="ACKNOWLEDGED").length} icon="✓" tone="purple" />
+    </div>
+    {error && <div className="panel" style={{borderColor:"#ef4444",color:"#991b1b"}}><strong>HR & Payroll haijaweza kupakia.</strong><p>{error}</p><p>Ikiwa hujaendesha faili la Bless-Stationery-HR-Payroll-Migration.sql kwenye Supabase, fanya hilo kwanza.</p><button className="secondary-btn" onClick={loadHR}>Jaribu tena</button></div>}
+    <div className="panel">
+      <div style={{display:"flex",gap:8,flexWrap:"wrap",marginBottom:18}}>
+        <button className={tab==="contracts"?"primary-btn":"secondary-btn"} onClick={()=>{setTab("contracts");setSignature("")}}>Employment Contracts</button>
+        <button className={tab==="payroll"?"primary-btn":"secondary-btn"} onClick={()=>{setTab("payroll");setSignature("")}}>Salary Payments</button>
+      </div>
+      {tab==="contracts" ? <>
+        {isAdmin && <form onSubmit={createContract} className="form-grid" style={{padding:16,border:"1px solid #e2e8f0",borderRadius:12,marginBottom:20}}><h3 style={{gridColumn:"1/-1",margin:0}}>Prepare Employment Contract (English)</h3>
+          <label>Employee<select required value={contractForm.staff_id} onChange={e=>setCF("staff_id",e.target.value)}><option value="">Select employee</option>{people.filter(p=>p.role!=="ADMIN").map(p=><option key={p.id} value={p.id}>{p.staff_name}</option>)}</select></label>
+          <label>Contract number<input value={contractForm.contract_number} onChange={e=>setCF("contract_number",e.target.value)} placeholder="Auto-generate if blank" /></label>
+          <label>Job title<input required value={contractForm.job_title} onChange={e=>setCF("job_title",e.target.value)} placeholder="e.g. Sales Assistant" /></label>
+          <label>Employment type<select value={contractForm.employment_type} onChange={e=>setCF("employment_type",e.target.value)}><option value="PERMANENT">Permanent</option><option value="TEMPORARY">Temporary</option><option value="CONTRACT">Fixed-term contract</option><option value="CASUAL">Casual</option></select></label>
+          <label>Start date<input required type="date" value={contractForm.start_date} onChange={e=>setCF("start_date",e.target.value)} /></label>
+          <label>End date (optional)<input type="date" value={contractForm.end_date} onChange={e=>setCF("end_date",e.target.value)} /></label>
+          <label>Salary (TZS)<input required min="0" type="number" value={contractForm.salary_amount} onChange={e=>setCF("salary_amount",e.target.value)} /></label>
+          <label>Pay frequency<select value={contractForm.pay_frequency} onChange={e=>setCF("pay_frequency",e.target.value)}><option value="MONTHLY">Monthly</option><option value="WEEKLY">Weekly</option><option value="BIWEEKLY">Bi-weekly</option></select></label>
+          <label style={{gridColumn:"1/-1"}}>Terms and conditions<textarea rows="4" value={contractForm.terms} onChange={e=>setCF("terms",e.target.value)} placeholder="Working hours, duties, leave, confidentiality, notice period and other agreed terms" /></label>
+          <div style={{gridColumn:"1/-1"}}><button className="primary-btn" disabled={busy}>{busy?"Saving...":"Save Draft Contract"}</button></div>
+        </form>}
+        {ownContracts.length===0 ? <p>No employment contracts yet.</p> : <div className="table-wrap"><table><thead><tr><th>Contract</th><th>Employee</th><th>Position</th><th>Salary</th><th>Status</th><th>Actions</th></tr></thead><tbody>{ownContracts.map(row=>{const person=people.find(p=>p.id===row.staff_id);return <tr key={row.id}><td>{row.contract_number}<br/><small>{row.start_date}</small></td><td>{person?.staff_name||"Employee"}</td><td>{row.job_title}</td><td>{moneyHR(row.salary_amount)}<br/><small>{row.pay_frequency}</small></td><td>{statusLabel(row.status)}</td><td><div style={{display:"flex",gap:6,flexWrap:"wrap"}}><button className="secondary-btn" onClick={()=>printContract(row)}>Print / PDF</button>{isAdmin&&row.status==="DRAFT"&&<button className="primary-btn" onClick={()=>{setSignature("");setTab("contracts");setActiveSignatureAction({type:"contract",row});}}>Employer sign</button>}{!isAdmin&&row.staff_id===staff?.id&&row.status==="PENDING_EMPLOYEE"&&<button className="primary-btn" onClick={()=>setActiveSignatureAction({type:"employeeContract",row})}>Sign contract</button>}</div></td></tr>})}</tbody></table></div>}
+      </> : <>
+        {isAdmin && <form onSubmit={createPayment} className="form-grid" style={{padding:16,border:"1px solid #e2e8f0",borderRadius:12,marginBottom:20}}><h3 style={{gridColumn:"1/-1",margin:0}}>Prepare Salary Payment Record</h3>
+          <label>Employee<select required value={paymentForm.staff_id} onChange={e=>{setPF("staff_id",e.target.value);setPF("contract_id","")}}><option value="">Select employee</option>{people.filter(p=>p.role!=="ADMIN").map(p=><option key={p.id} value={p.id}>{p.staff_name}</option>)}</select></label>
+          <label>Employment contract<select value={paymentForm.contract_id} onChange={e=>setPF("contract_id",e.target.value)}><option value="">Not linked</option>{contracts.filter(c=>c.staff_id===paymentForm.staff_id&&c.status==="ACTIVE").map(c=><option key={c.id} value={c.id}>{c.contract_number} — {c.job_title}</option>)}</select></label>
+          <label>Receipt number<input value={paymentForm.receipt_number} onChange={e=>setPF("receipt_number",e.target.value)} placeholder="Auto-generate if blank" /></label>
+          <label>Period start<input type="date" required value={paymentForm.pay_period_start} onChange={e=>setPF("pay_period_start",e.target.value)} /></label>
+          <label>Period end<input type="date" required value={paymentForm.pay_period_end} onChange={e=>setPF("pay_period_end",e.target.value)} /></label>
+          <label>Gross salary (TZS)<input type="number" min="0" required value={paymentForm.gross_amount} onChange={e=>setPF("gross_amount",e.target.value)} /></label>
+          <label>Deductions (TZS)<input type="number" min="0" required value={paymentForm.deductions_amount} onChange={e=>setPF("deductions_amount",e.target.value)} /></label>
+          <label>Payment method<select value={paymentForm.payment_method} onChange={e=>setPF("payment_method",e.target.value)}><option value="CASH">Cash</option><option value="BANK">Bank transfer</option><option value="MOBILE_MONEY">Mobile money</option></select></label>
+          <label>Payment reference<input value={paymentForm.payment_reference} onChange={e=>setPF("payment_reference",e.target.value)} placeholder="Bank/mobile transaction ID" /></label>
+          <label style={{gridColumn:"1/-1"}}>Notes<input value={paymentForm.notes} onChange={e=>setPF("notes",e.target.value)} /></label>
+          <div style={{gridColumn:"1/-1"}}><button className="primary-btn" disabled={busy}>{busy?"Saving...":"Save Salary Draft"}</button></div>
+        </form>}
+        {ownPayments.length===0 ? <p>No salary payments yet.</p> : <div className="table-wrap"><table><thead><tr><th>Receipt / Period</th><th>Employee</th><th>Gross / Deductions / Net</th><th>Method</th><th>Status</th><th>Actions</th></tr></thead><tbody>{ownPayments.map(row=>{const person=people.find(p=>p.id===row.staff_id);return <tr key={row.id}><td>{row.receipt_number}<br/><small>{row.pay_period_start} – {row.pay_period_end}</small></td><td>{person?.staff_name||"Employee"}</td><td>{moneyHR(row.gross_amount)}<br/><small>Deductions: {moneyHR(row.deductions_amount)}</small><br/><strong>{moneyHR(row.net_amount)}</strong></td><td>{row.payment_method}<br/><small>{row.payment_reference||"-"}</small></td><td>{statusLabel(row.status)}</td><td><div style={{display:"flex",gap:6,flexWrap:"wrap"}}><button className="secondary-btn" onClick={()=>printSalary(row)}>Print / PDF</button>{isAdmin&&row.status==="DRAFT"&&<button className="primary-btn" onClick={()=>setActiveSignatureAction({type:"pay",row})}>Authorize & mark paid</button>}{!isAdmin&&row.staff_id===staff?.id&&row.status==="PAID"&&<button className="primary-btn" onClick={()=>setActiveSignatureAction({type:"ack",row})}>Acknowledge receipt</button>}</div></td></tr>})}</tbody></table></div>}
+      </>}
+    </div>
+    {activeSignatureAction && <div className="panel" style={{border:"2px solid #64748b"}}><h3>{activeSignatureAction.type==="contract"?"Employer signature — Employment Contract":activeSignatureAction.type==="employeeContract"?"Employee signature — Employment Contract":activeSignatureAction.type==="pay"?"Employer authorization — Salary Payment":"Employee acknowledgment — Salary Payment"}</h3><p>Hati: <strong>{activeSignatureAction.row.contract_number || activeSignatureAction.row.receipt_number}</strong></p><SignaturePad key={activeSignatureAction.type+activeSignatureAction.row.id} label="Draw signature" onSignature={setSignature} /><div style={{display:"flex",gap:8,marginTop:14}}><button className="primary-btn" disabled={busy||!signature} onClick={async()=>{const a=activeSignatureAction;setActiveSignatureAction(null);if(a.type==="contract")await employerSignContract(a.row);else if(a.type==="employeeContract")await employeeSignContract(a.row);else if(a.type==="pay")await markPaid(a.row);else await acknowledge(a.row);}}>Confirm signature</button><button className="secondary-btn" onClick={()=>{setActiveSignatureAction(null);setSignature("")}}>Cancel</button></div></div>}
+    <div className="panel" style={{background:"#f8fafc"}}><strong>Important separation</strong><p style={{marginBottom:0}}>Salary records are stored separately from sales, expenses and Daily Cash calculations. Cash salary payments are not automatically added to the drawer ledger by this module.</p></div>
+    {loading && <p>Loading HR & Payroll…</p>}
+  </div>;
+}
+
 function StaffPage({ businessId, refresh, currentStaff }) {
   const [staff, setStaff] = useState([]);
   const [showForm, setShowForm] = useState(false);
@@ -6393,60 +6593,286 @@ function BusinessSettingsPage({ businessId, business, user, theme, setTheme, den
 
 
 function AdminMessageBanner({ businessId, user, staff }) {
- const [items,setItems]=useState([]); const [dismissed,setDismissed]=useState([]);
- useEffect(()=>{let live=true; async function load(){if(!businessId||!user?.id)return;const {data,error}=await supabase.from("admin_messages").select("id,message,created_at,is_important,target_user_id").eq("business_id",businessId).order("created_at",{ascending:false}).limit(5);if(!error&&live)setItems((data||[]).filter(m=>!m.target_user_id||m.target_user_id===user.id));}load();return()=>{live=false}},[businessId,user?.id]);
- const shown=items.filter(m=>!dismissed.includes(m.id)); if(!shown.length)return null;
- return <div style={{margin:"10px 18px 0",display:"grid",gap:8}}>{shown.map(m=><div key={m.id} role="status" style={{background:"#fff6d8",border:"1px solid #e5bd48",borderRadius:10,padding:"12px 14px",color:"#513f08"}}><div style={{display:"flex",alignItems:"center",justifyContent:"space-between",gap:10}}><strong>📢 Ujumbe kutoka ADMIN {m.is_important?"• MUHIMU":""}</strong><button type="button" onClick={()=>setDismissed(x=>[...x,m.id])} aria-label="Funga ujumbe">×</button></div><div style={{whiteSpace:"pre-wrap",marginTop:6}}>{m.message}</div><small>{formatDate(m.created_at)}</small></div>)}</div>;
+  const [items, setItems] = useState([]);
+  const [dismissed, setDismissed] = useState([]);
+  const [expanded, setExpanded] = useState([]);
+  const [readIds, setReadIds] = useState([]);
+  const isAdmin = String(staff?.role || "").toUpperCase() === "ADMIN";
+
+  useEffect(() => {
+    let live = true;
+    async function load() {
+      if (!businessId || !user?.id) return;
+      const { data, error } = await supabase
+        .from("admin_messages")
+        .select("id,message,created_at,is_important,target_user_id")
+        .eq("business_id", businessId)
+        .order("created_at", { ascending: false })
+        .limit(100);
+      if (error) {
+        console.error("Admin message banner load failed:", error);
+        return;
+      }
+      const allowed = (data || []).filter(m => !m.target_user_id || m.target_user_id === user.id);
+      if (live) setItems(allowed);
+      const { data: hidden, error: hiddenError } = await supabase
+        .from("admin_message_dismissals")
+        .select("message_id")
+        .eq("business_id", businessId)
+        .eq("user_id", user.id);
+      if (!hiddenError && live) setDismissed((hidden || []).map(x => x.message_id));
+      const { data: reads, error: readsError } = await supabase
+        .from("admin_message_reads")
+        .select("message_id")
+        .eq("business_id", businessId)
+        .eq("user_id", user.id);
+      if (!readsError && live) setReadIds((reads || []).map(x => x.message_id));
+    }
+    load();
+    return () => { live = false; };
+  }, [businessId, user?.id]);
+
+  async function openMessage(message) {
+    setExpanded(prev => prev.includes(message.id) ? prev : [...prev, message.id]);
+    if (readIds.includes(message.id)) return;
+    const { error } = await supabase.from("admin_message_reads").upsert({
+      message_id: message.id,
+      business_id: businessId,
+      user_id: user.id,
+      read_at: new Date().toISOString()
+    }, { onConflict: "message_id,user_id" });
+    if (error) {
+      console.error("Could not save message read receipt:", error);
+      return;
+    }
+    setReadIds(prev => [...prev, message.id]);
+  }
+
+  async function dismissMessage(message) {
+    const { error } = await supabase.from("admin_message_dismissals").upsert({
+      message_id: message.id,
+      business_id: businessId,
+      user_id: user.id,
+      dismissed_at: new Date().toISOString()
+    }, { onConflict: "message_id,user_id" });
+    if (error) {
+      alert("Ujumbe haukuondolewa. Hakikisha SQL ya message dismissals imeendeshwa: " + error.message);
+      return;
+    }
+    setDismissed(prev => [...prev, message.id]);
+  }
+
+  const shown = items.filter(m => !dismissed.includes(m.id));
+  if (!shown.length) return null;
+
+  return (
+    <div style={{ margin: "10px 18px 0", display: "grid", gap: 10 }}>
+      {shown.map(m => {
+        const isExpanded = expanded.includes(m.id);
+        return (
+          <article key={m.id} style={{ background: "#fffaf0", border: "1px solid #e5bd48", borderLeft: "5px solid #c99a16", borderRadius: 12, padding: "13px 15px", color: "#513f08", boxShadow: "0 3px 12px rgba(70,50,0,.06)" }}>
+            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10, flexWrap: "wrap" }}>
+              <strong>📢 Ujumbe kutoka ADMIN {m.is_important ? "• MUHIMU" : ""}</strong>
+              <small>{formatDate(m.created_at)}</small>
+            </div>
+            <p style={{ whiteSpace: "pre-wrap", margin: "9px 0", lineHeight: 1.55 }}>
+              {isExpanded ? m.message : `${String(m.message || "").slice(0, 10)}${String(m.message || "").length > 10 ? "…" : ""}`}
+            </p>
+            <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+              {!isExpanded && <button type="button" className="primary-btn" onClick={() => openMessage(m)}>Read / Soma</button>}
+              {isExpanded && <span style={{ fontSize: 12, fontWeight: 700, alignSelf: "center" }}>{readIds.includes(m.id) ? "✓ Umesoma" : "Ujumbe umefunguliwa"}</span>}
+              <button type="button" className="secondary-btn" onClick={() => dismissMessage(m)}>Ondoa kwenye dashboard</button>
+            </div>
+          </article>
+        );
+      })}
+    </div>
+  );
 }
 
 function AdminMessagesPage({ businessId, staff, user }) {
   const [messages, setMessages] = useState([]);
   const [staffList, setStaffList] = useState([]);
+  const [reads, setReads] = useState([]);
+  const [dismissals, setDismissals] = useState([]);
   const [body, setBody] = useState("");
   const [target, setTarget] = useState("ALL");
   const [busy, setBusy] = useState(false);
   const isAdmin = String(staff?.role || "").toUpperCase() === "ADMIN";
+
   async function load() {
     if (!businessId) return;
     const { data, error } = await supabase.from("admin_messages").select("*").eq("business_id", businessId).order("created_at", { ascending: false }).limit(100);
     if (error) console.error("Admin messages load failed:", error); else setMessages(data || []);
+    const { data: readRows, error: readError } = await supabase.from("admin_message_reads").select("*").eq("business_id", businessId);
+    if (readError) console.warn("Message read receipts load failed:", readError); else setReads(readRows || []);
+    const { data: dismissedRows, error: dismissedError } = await supabase.from("admin_message_dismissals").select("*").eq("business_id", businessId);
+    if (dismissedError) console.warn("Message dismissals load failed:", dismissedError); else setDismissals(dismissedRows || []);
     if (isAdmin) {
       const { data: people } = await supabase.from("staff").select("user_id,staff_name,role").eq("business_id", businessId).eq("active", true).order("staff_name");
       setStaffList(people || []);
     }
   }
+
   useEffect(() => { load(); }, [businessId, staff?.role]);
+
   async function send(e) {
     e.preventDefault();
     if (!isAdmin) return alert("ADMIN pekee ndiye anayeweza kutuma ujumbe.");
     if (!body.trim()) return alert("Andika ujumbe kwanza.");
     setBusy(true);
-    const { error } = await supabase.from("admin_messages").insert({ business_id: businessId, sender_user_id: user.id, target_user_id: target === "ALL" ? null : target, message: body.trim(), is_important: true });
+    const { error } = await supabase.from("admin_messages").insert({
+      business_id: businessId,
+      sender_user_id: user.id,
+      target_user_id: target === "ALL" ? null : target,
+      message: body.trim(),
+      is_important: true
+    });
     setBusy(false);
     if (error) return alert("Ujumbe haukutumwa: " + error.message);
-    setBody(""); alert("Ujumbe umetumwa."); load();
+    setBody("");
+    alert("Ujumbe umetumwa.");
+    load();
   }
+
   async function markRead(row) {
-    const { error } = await supabase.from("admin_message_reads").upsert({ message_id: row.id, business_id: businessId, user_id: user.id, read_at: new Date().toISOString() }, { onConflict: "message_id,user_id" });
-    if (error) console.warn("Could not mark message read:", error);
+    const { error } = await supabase.from("admin_message_reads").upsert({
+      message_id: row.id,
+      business_id: businessId,
+      user_id: user.id,
+      read_at: new Date().toISOString()
+    }, { onConflict: "message_id,user_id" });
+    if (error) return alert("Hali ya kusoma haikuhifadhiwa: " + error.message);
+    load();
   }
+
   const visible = messages.filter(m => !m.target_user_id || m.target_user_id === user.id || isAdmin);
-  return <div className="page-content"><PageTitle title="Admin Messages" subtitle="Tuma matangazo kwa staff au soma ujumbe uliotumwa." />
-    {isAdmin && <form className="panel" onSubmit={send} style={{display:"grid",gap:12}}><h3>✉ Tuma ujumbe kwa staff</h3><label>Mpokeaji<select value={target} onChange={e=>setTarget(e.target.value)}><option value="ALL">Staff wote</option>{staffList.filter(s=>s.user_id !== user.id).map(s=><option key={s.user_id} value={s.user_id}>{s.staff_name} ({s.role})</option>)}</select></label><label>Ujumbe<textarea rows={4} value={body} onChange={e=>setBody(e.target.value)} placeholder="Andika maelekezo au tangazo hapa..." required /></label><button className="primary-btn" disabled={busy}>{busy ? "Inatuma..." : "Tuma ujumbe"}</button></form>}
-    <div className="panel"><h3>Ujumbe na matangazo</h3>{visible.length ? visible.map(m=><article key={m.id} style={{border:"1px solid var(--border-color, #ddd)",borderRadius:10,padding:14,marginTop:10}}><div style={{display:"flex",justifyContent:"space-between",gap:10,flexWrap:"wrap"}}><strong>{m.is_important ? "📌 Tangazo muhimu" : "Ujumbe"}</strong><small>{formatDate(m.created_at)}</small></div><p style={{whiteSpace:"pre-wrap"}}>{m.message}</p><button type="button" className="secondary-btn" onClick={()=>markRead(m)}>Weka alama: Nimesoma</button></article>):<p>Hakuna ujumbe bado. Ujumbe mpya utaonekana hapa.</p>}</div>
-  </div>;
+  return (
+    <div className="page-content">
+      <PageTitle title="Admin Messages" subtitle="Ujumbe una muonekano mfupi, kitufe cha Read na historia ya aliyesoma." />
+      {isAdmin && <form className="panel" onSubmit={send} style={{ display: "grid", gap: 12 }}>
+        <h3>✉ Tuma ujumbe kwa staff</h3>
+        <label>Mpokeaji<select value={target} onChange={e => setTarget(e.target.value)}>
+          <option value="ALL">Staff wote</option>
+          {staffList.filter(s => s.user_id !== user.id).map(s => <option key={s.user_id} value={s.user_id}>{s.staff_name} ({s.role})</option>)}
+        </select></label>
+        <label>Ujumbe<textarea rows={4} value={body} onChange={e => setBody(e.target.value)} placeholder="Andika maelekezo au tangazo hapa..." required /></label>
+        <button className="primary-btn" disabled={busy}>{busy ? "Inatuma..." : "Tuma ujumbe"}</button>
+      </form>}
+      <div className="panel">
+        <h3>Ujumbe na matangazo</h3>
+        {visible.length ? visible.map(m => {
+          const messageReads = reads.filter(r => r.message_id === m.id);
+          const messageDismissals = dismissals.filter(r => r.message_id === m.id);
+          return <article key={m.id} style={{ border: "1px solid var(--border-color, #ddd)", borderRadius: 12, padding: 15, marginTop: 12, background: "var(--panel-bg, #fff)" }}>
+            <div style={{ display: "flex", justifyContent: "space-between", gap: 10, flexWrap: "wrap", alignItems: "center" }}>
+              <strong>{m.is_important ? "📌 Tangazo muhimu" : "Ujumbe"}</strong>
+              <small>{formatDate(m.created_at)}</small>
+            </div>
+            <p style={{ whiteSpace: "pre-wrap", lineHeight: 1.6, margin: "12px 0" }}>{m.message}</p>
+            {!isAdmin && <button type="button" className="secondary-btn" onClick={() => markRead(m)}>Weka alama: Nimesoma</button>}
+            {isAdmin && <div style={{ marginTop: 12, padding: 12, borderRadius: 8, background: "var(--soft-bg, #f7f8fa)" }}>
+              <strong>Hali ya kusoma</strong>
+              {staffList.filter(person => person.user_id !== user.id && (!m.target_user_id || m.target_user_id === person.user_id)).length === 0
+                ? <p style={{ marginBottom: 0 }}>Hakuna staff anayelengwa na ujumbe huu.</p>
+                : staffList.filter(person => person.user_id !== user.id && (!m.target_user_id || m.target_user_id === person.user_id)).map(person => {
+                  const receipt = messageReads.find(r => r.user_id === person.user_id);
+                  const dismissed = messageDismissals.some(r => r.user_id === person.user_id);
+                  return <div key={person.user_id} style={{ display: "flex", justifyContent: "space-between", gap: 10, flexWrap: "wrap", borderTop: "1px solid var(--border-color, #ddd)", padding: "8px 0" }}>
+                    <span>{person.staff_name} ({person.role})</span>
+                    <span style={{ fontWeight: 600, color: receipt ? "#16803c" : "#a16207" }}>
+                      {receipt ? `✓ Amesoma: ${formatDate(receipt.read_at)}` : "Bado hajasoma"}
+                      {dismissed ? " • Ameondoa kwenye dashboard" : ""}
+                    </span>
+                  </div>;
+                })}
+            </div>}
+          </article>;
+        }) : <p>Hakuna ujumbe bado. Ujumbe mpya utaonekana hapa.</p>}
+      </div>
+    </div>
+  );
 }
 
 function HotspotLedgerPage({ businessId, staff, user }) {
-  const [rows, setRows] = useState([]); const [kind,setKind] = useState("SALE"); const [amount,setAmount] = useState(""); const [note,setNote] = useState(""); const [method,setMethod] = useState("CASH"); const [busy,setBusy] = useState(false); const [date,setDate] = useState(todayDateInput());
-  async function load(){ if(!businessId)return; const {data,error}=await supabase.from("hotspot_transactions").select("*").eq("business_id",businessId).gte("occurred_at",date+"T00:00:00").lte("occurred_at",date+"T23:59:59.999").order("occurred_at",{ascending:false}); if(error) console.error("Hotspot ledger load failed:",error); else setRows(data||[]); }
-  useEffect(()=>{load();},[businessId,date]);
-  const sum = (k) => rows.filter(r=>r.transaction_type===k).reduce((a,r)=>a+number(r.amount),0);
-  async function add(e){e.preventDefault();if(number(amount)<=0)return alert("Weka kiasi zaidi ya sifuri.");setBusy(true);const {error}=await supabase.from("hotspot_transactions").insert({business_id:businessId,transaction_type:kind,amount:number(amount),payment_method:method,note:note.trim()||null,created_by:user.id,occurred_at:new Date().toISOString()});setBusy(false);if(error)return alert("Imeshindikana kuhifadhi. Hakikisha SQL ya Hotspot imeendeshwa: "+error.message);setAmount("");setNote("");load();}
-  return <div className="page-content"><PageTitle title="Wi-Fi Hotspot Cash" subtitle="Rekodi na uangalie fedha za Hotspot tofauti na stationery." />
-    <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(160px,1fr))",gap:12,marginBottom:16}}>{[["Mauzo / mapato",sum("SALE")+sum("CAPITAL")],["Matumizi",sum("EXPENSE")],["Deposit",sum("DEPOSIT")],["Salio la siku",sum("SALE")+sum("CAPITAL")-sum("EXPENSE")-sum("DEPOSIT")]].map(([label,val])=><div className="panel" key={label}><small>{label}</small><h3>{money(val)}</h3></div>)}</div>
-    <form className="panel" onSubmit={add} style={{display:"grid",gap:12}}><h3>Rekodi muamala wa Hotspot</h3><label>Tarehe ya kuangalia<input type="date" value={date} onChange={e=>setDate(e.target.value)} /></label><label>Aina ya muamala<select value={kind} onChange={e=>setKind(e.target.value)}><option value="SALE">Mauzo / mapato ya Hotspot</option><option value="CAPITAL">Mtaji / fedha iliyoongezwa</option><option value="EXPENSE">Matumizi ya Hotspot</option><option value="DEPOSIT">Deposit ya Hotspot</option></select></label><label>Kiasi (TZS)<input type="number" min="1" step="1" value={amount} onChange={e=>setAmount(e.target.value)} required /></label><label>Njia ya malipo<select value={method} onChange={e=>setMethod(e.target.value)}><option value="CASH">CASH</option><option value="M-PESA">M-PESA</option><option value="BANK">BANK</option><option value="OTHER">OTHER</option></select></label><label>Maelezo<input value={note} onChange={e=>setNote(e.target.value)} placeholder="Mfano: kifurushi cha mteja / matumizi" /></label><button className="primary-btn" disabled={busy}>{busy?"Inahifadhi...":"Hifadhi muamala"}</button><p style={{fontSize:12}}>Hesabu hizi ni ledger tofauti ya Hotspot; hazijachanganywa na mauzo au deposit za stationery. Kwa sasa rekodi zinaingizwa hapa kwa mkono, si kutoka Airtel ODU moja kwa moja.</p></form>
-    <div className="panel"><h3>Historia ya siku — {date}</h3>{rows.length?<div style={{overflowX:"auto"}}><table><thead><tr><th>Muda</th><th>Aina</th><th>Maelezo</th><th>Njia</th><th>Kiasi</th></tr></thead><tbody>{rows.map(r=><tr key={r.id}><td>{formatDate(r.occurred_at)}</td><td>{r.transaction_type}</td><td>{r.note||"-"}</td><td>{r.payment_method||"-"}</td><td>{money(r.amount)}</td></tr>)}</tbody></table></div>:<p>Hakuna miamala ya Hotspot kwa tarehe hii.</p>}</div>
+  const [rows, setRows] = useState([]);
+  const [kind, setKind] = useState("SALE");
+  const [amount, setAmount] = useState("");
+  const [note, setNote] = useState("");
+  const [method, setMethod] = useState("CASH");
+  const [busy, setBusy] = useState(false);
+  const [date, setDate] = useState(todayDateInput());
+  const [allHistory, setAllHistory] = useState(true);
+
+  async function load() {
+    if (!businessId) return;
+    let query = supabase.from("hotspot_transactions").select("*").eq("business_id", businessId);
+    if (!allHistory) {
+      query = query.gte("occurred_at", `${date}T00:00:00`).lte("occurred_at", `${date}T23:59:59.999`);
+    }
+    const { data, error } = await query.order("occurred_at", { ascending: false }).limit(5000);
+    if (error) console.error("Hotspot ledger load failed:", error);
+    else setRows(data || []);
+  }
+
+  useEffect(() => { load(); }, [businessId, date, allHistory]);
+
+  const sum = (k) => rows.filter(r => r.transaction_type === k).reduce((a, r) => a + number(r.amount), 0);
+
+  async function add(e) {
+    e.preventDefault();
+    if (number(amount) <= 0) return alert("Weka kiasi zaidi ya sifuri.");
+    setBusy(true);
+    const { error } = await supabase.from("hotspot_transactions").insert({
+      business_id: businessId,
+      transaction_type: kind,
+      amount: number(amount),
+      payment_method: method,
+      note: note.trim() || null,
+      created_by: user.id,
+      occurred_at: new Date().toISOString()
+    });
+    setBusy(false);
+    if (error) return alert("Imeshindikana kuhifadhi. Hakikisha SQL ya Hotspot imeendeshwa: " + error.message);
+    setAmount("");
+    setNote("");
+    await load();
+  }
+
+  return <div className="page-content">
+    <PageTitle title="Wi-Fi Hotspot Cash" subtitle="Rekodi za Hotspot zinahifadhiwa na historia ya siku zote inaweza kuonekana hapa." />
+    <div className="panel" style={{ display: "flex", alignItems: "end", justifyContent: "space-between", gap: 12, flexWrap: "wrap", marginBottom: 14 }}>
+      <label style={{ minWidth: 220, display: "grid", gap: 6 }}>Chuja historia kwa tarehe
+        <input type="date" value={date} onChange={e => { setDate(e.target.value); setAllHistory(false); }} disabled={allHistory} />
+      </label>
+      <label style={{ display: "flex", alignItems: "center", gap: 8 }}>
+        <input type="checkbox" checked={allHistory} onChange={e => setAllHistory(e.target.checked)} />
+        Onyesha historia yote (siku zote)
+      </label>
+      <button type="button" className="secondary-btn" onClick={load}>↻ Refresh historia</button>
+    </div>
+    <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(160px,1fr))", gap: 12, marginBottom: 16 }}>
+      {[["Mauzo / mapato", sum("SALE")], ["Mtaji ulioongezwa", sum("CAPITAL")], ["Matumizi", sum("EXPENSE")], ["Deposit", sum("DEPOSIT")], ["Salio", sum("SALE") + sum("CAPITAL") - sum("EXPENSE") - sum("DEPOSIT")]].map(([label, val]) =>
+        <div className="panel" key={label}><small>{label}</small><h3>{money(val)}</h3></div>
+      )}
+    </div>
+    <form className="panel" onSubmit={add} style={{ display: "grid", gap: 12 }}>
+      <h3>Rekodi muamala wa Hotspot</h3>
+      <label>Aina ya muamala<select value={kind} onChange={e => setKind(e.target.value)}>
+        <option value="SALE">Mauzo / mapato ya Hotspot</option><option value="CAPITAL">Mtaji / fedha iliyoongezwa</option><option value="EXPENSE">Matumizi ya Hotspot</option><option value="DEPOSIT">Deposit ya Hotspot</option>
+      </select></label>
+      <label>Kiasi (TZS)<input type="number" min="1" step="1" value={amount} onChange={e => setAmount(e.target.value)} required /></label>
+      <label>Njia ya malipo<select value={method} onChange={e => setMethod(e.target.value)}><option value="CASH">CASH</option><option value="M-PESA">M-PESA</option><option value="BANK">BANK</option><option value="OTHER">OTHER</option></select></label>
+      <label>Maelezo<input value={note} onChange={e => setNote(e.target.value)} placeholder="Mfano: kifurushi cha mteja / matumizi" /></label>
+      <button className="primary-btn" disabled={busy}>{busy ? "Inahifadhi..." : "Hifadhi muamala"}</button>
+      <p style={{ fontSize: 12 }}>Rekodi hizi ziko tofauti na fedha za stationery. Ingizo bado linafanywa kwa mkono, si kutoka Airtel ODU moja kwa moja.</p>
+    </form>
+    <div className="panel">
+      <h3>{allHistory ? "Historia yote ya Hotspot" : `Historia ya siku — ${date}`}</h3>
+      {rows.length ? <div style={{ overflowX: "auto" }}><table><thead><tr><th>Tarehe na muda</th><th>Aina</th><th>Maelezo</th><th>Njia</th><th>Kiasi</th></tr></thead><tbody>
+        {rows.map(r => <tr key={r.id}><td>{formatDate(r.occurred_at)}</td><td>{r.transaction_type}</td><td>{r.note || "-"}</td><td>{r.payment_method || "-"}</td><td>{money(r.amount)}</td></tr>)}
+      </tbody></table></div> : <p>Hakuna miamala ya Hotspot kwenye historia hii.</p>}
+    </div>
   </div>;
 }
 
